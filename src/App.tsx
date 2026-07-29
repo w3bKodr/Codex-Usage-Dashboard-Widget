@@ -1,0 +1,564 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
+import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  Activity,
+  ArrowUpRight,
+  CalendarClock,
+  ChevronRight,
+  CircleAlert,
+  Eye,
+  Gauge,
+  LoaderCircle,
+  LogOut,
+  Minus,
+  RefreshCw,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Timer,
+  TimerReset,
+  X,
+} from "lucide-react";
+import type {
+  DashboardSnapshot,
+  LoginStart,
+  UsageSample,
+  WidgetSettings,
+} from "./types";
+
+const SETTINGS_KEY = "codex-weekly-widget.settings.v2";
+const SAMPLES_KEY = "codex-weekly-widget.samples.v1";
+const POSITION_KEY = "codex-weekly-widget.position.v2";
+
+const defaultSettings: WidgetSettings = {
+  opacity: 82,
+  blur: 24,
+  refreshSeconds: 90,
+  startWithWindows: false,
+  desktopMode: false,
+};
+
+const isTauriRuntime = () => "__TAURI_INTERNALS__" in window;
+
+const previewSnapshot: DashboardSnapshot = {
+  account: { connected: true, email: "alex@example.com", plan: "pro" },
+  fiveHour: {
+    usedPercent: 22,
+    remainingPercent: 78,
+    resetAt: Math.floor(Date.now() / 1000) + 2 * 3_600 + 17 * 60,
+    windowDurationMins: 300,
+    limitId: "codex",
+    limitName: "Codex",
+  },
+  weekly: {
+    usedPercent: 37,
+    remainingPercent: 63,
+    resetAt: Math.floor(Date.now() / 1000) + 3 * 86_400 + 11 * 3_600,
+    windowDurationMins: 10_080,
+    limitId: "codex",
+    limitName: "Codex",
+  },
+  tokensToday: 241_300,
+  tokenBucketDate: new Date().toISOString().slice(0, 10),
+  lifetimeTokens: 8_921_300,
+  creditsBalance: null,
+  creditsUnlimited: false,
+  fetchedAt: Date.now(),
+};
+
+function loadSettings(): WidgetSettings {
+  try {
+    return { ...defaultSettings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
+  } catch {
+    return defaultSettings;
+  }
+}
+
+function loadSamples(): UsageSample[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(SAMPLES_KEY) ?? "[]");
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatTokens(value?: number | null): string {
+  if (value == null) return "—";
+  return new Intl.NumberFormat("en-US", {
+    notation: value >= 10_000 ? "compact" : "standard",
+    maximumFractionDigits: value >= 10_000 ? 1 : 0,
+  }).format(value);
+}
+
+function formatReset(timestamp?: number | null): string {
+  if (!timestamp) return "Reset time unavailable";
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
+function formatCountdown(timestamp?: number | null, now = Date.now()): string {
+  if (!timestamp) return "Waiting for Codex";
+  const seconds = Math.max(0, Math.floor(timestamp - now / 1000));
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  if (days > 0) return `${days}d ${hours}h remaining`;
+  if (hours > 0) return `${hours}h ${minutes}m remaining`;
+  return `${minutes}m remaining`;
+}
+
+function getStatusTone(remaining: number): "good" | "warn" | "critical" {
+  if (remaining <= 10) return "critical";
+  if (remaining <= 25) return "warn";
+  return "good";
+}
+
+function calculateRunway(samples: UsageSample[], current?: DashboardSnapshot | null): number | null {
+  const weekly = current?.weekly;
+  if (!weekly || !weekly.resetAt) return null;
+  const relevant = samples
+    .filter((sample) => sample.resetAt === weekly.resetAt)
+    .sort((a, b) => a.capturedAt - b.capturedAt)
+    .slice(-24);
+  if (relevant.length < 3 || relevant.at(-1)!.capturedAt - relevant[0].capturedAt < 30 * 60_000) {
+    return null;
+  }
+  const rates: number[] = [];
+  for (let index = 1; index < relevant.length; index += 1) {
+    const deltaUsage = relevant[index].usedPercent - relevant[index - 1].usedPercent;
+    const deltaHours = (relevant[index].capturedAt - relevant[index - 1].capturedAt) / 3_600_000;
+    if (deltaUsage > 0 && deltaHours > 0) rates.push(deltaUsage / deltaHours);
+  }
+  if (!rates.length) return null;
+  rates.sort((a, b) => a - b);
+  const median = rates[Math.floor(rates.length / 2)];
+  return median > 0 ? weekly.remainingPercent / median : null;
+}
+
+function calculatePaceBudget(snapshot?: DashboardSnapshot | null): number | null {
+  const weekly = snapshot?.weekly;
+  if (!weekly?.resetAt) return null;
+  const now = new Date();
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  const resetMs = weekly.resetAt * 1000;
+  const totalRemainingMs = resetMs - now.getTime();
+  if (totalRemainingMs <= 0) return 0;
+  const horizonMs = Math.max(0, Math.min(midnight.getTime(), resetMs) - now.getTime());
+  return weekly.remainingPercent * (horizonMs / totalRemainingMs);
+}
+
+function UsageRing({ remaining }: { remaining: number }) {
+  const value = Math.max(0, Math.min(100, remaining));
+  const circumference = 2 * Math.PI * 74;
+  const dashOffset = circumference * (1 - value / 100);
+  return (
+    <div className="usage-ring" aria-label={`${Math.round(value)} percent remaining`}>
+      <svg viewBox="0 0 176 176" role="img">
+        <defs>
+          <linearGradient id="ringGradient" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#a78bfa" />
+            <stop offset="52%" stopColor="#6d8dff" />
+            <stop offset="100%" stopColor="#42d7bd" />
+          </linearGradient>
+        </defs>
+        <circle className="ring-track" cx="88" cy="88" r="74" />
+        <circle
+          className="ring-value"
+          cx="88"
+          cy="88"
+          r="74"
+          style={{ strokeDasharray: circumference, strokeDashoffset: dashOffset }}
+        />
+      </svg>
+      <div className="ring-label">
+        <span>{Math.round(value)}</span>
+        <small>%</small>
+        <em>remaining</em>
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (next: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={`toggle ${checked ? "on" : ""}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span />
+    </button>
+  );
+}
+
+export default function App() {
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const [settings, setSettings] = useState<WidgetSettings>(loadSettings);
+  const [samples, setSamples] = useState<UsageSample[]>(loadSamples);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const refreshing = useRef(false);
+
+  const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
+    setLoading((current) => current || !snapshot);
+    try {
+      if (!isTauriRuntime()) {
+        setSnapshot({ ...previewSnapshot, fetchedAt: Date.now() });
+        setError(null);
+        return;
+      }
+      const next = await invoke<DashboardSnapshot>("get_dashboard");
+      setSnapshot(next);
+      setError(null);
+      if (next.weekly) {
+        setSamples((current) => {
+          const sample: UsageSample = {
+            capturedAt: Date.now(),
+            usedPercent: next.weekly!.usedPercent,
+            resetAt: next.weekly!.resetAt ?? null,
+          };
+          const cutoff = Date.now() - 30 * 86_400_000;
+          const compacted = [...current.filter((item) => item.capturedAt >= cutoff), sample].slice(-500);
+          localStorage.setItem(SAMPLES_KEY, JSON.stringify(compacted));
+          return compacted;
+        });
+      }
+    } catch (cause) {
+      const message = String(cause);
+      setError(message.includes("not found") ? "Codex is not installed or could not be found." : message);
+    } finally {
+      refreshing.current = false;
+      setLoading(false);
+    }
+  }, [snapshot]);
+
+  useEffect(() => {
+    void refresh();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => void refresh(), settings.refreshSeconds * 1_000);
+    return () => window.clearInterval(timer);
+  }, [refresh, settings.refreshSeconds]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const unlisteners = [
+      listen("codex://rate-limits-updated", () => void refresh()),
+      listen("codex://login-completed", () => {
+        setLoggingIn(false);
+        window.setTimeout(() => void refresh(), 500);
+      }),
+      listen("widget://refresh", () => void refresh()),
+    ];
+    return () => {
+      void Promise.all(unlisteners).then((callbacks) => callbacks.forEach((unlisten) => unlisten()));
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    document.documentElement.style.setProperty("--panel-opacity", String(settings.opacity / 100));
+    document.documentElement.style.setProperty("--panel-blur", `${settings.blur}px`);
+  }, [settings]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const windowHandle = getCurrentWindow();
+    void windowHandle.setAlwaysOnBottom(settings.desktopMode);
+    void isEnabled().then((value) => {
+      setSettings((current) => (current.startWithWindows === value ? current : { ...current, startWithWindows: value }));
+    });
+    try {
+      const position = JSON.parse(localStorage.getItem(POSITION_KEY) ?? "null");
+      if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+        void windowHandle.setPosition(new PhysicalPosition(position.x, position.y));
+      }
+    } catch {
+      // Ignore an invalid saved window position.
+    }
+    const positionListener = windowHandle.onMoved(({ payload }) => {
+      localStorage.setItem(POSITION_KEY, JSON.stringify(payload));
+    });
+    return () => {
+      void positionListener.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  const updateSettings = (patch: Partial<WidgetSettings>) => {
+    setSettings((current) => ({ ...current, ...patch }));
+  };
+
+  const toggleAutostart = async (next: boolean) => {
+    if (!isTauriRuntime()) {
+      updateSettings({ startWithWindows: next });
+      return;
+    }
+    try {
+      if (next) await enable();
+      else await disable();
+      updateSettings({ startWithWindows: next });
+    } catch (cause) {
+      setError(`Could not update startup preference: ${String(cause)}`);
+    }
+  };
+
+  const toggleDesktopMode = async (next: boolean) => {
+    if (isTauriRuntime()) await getCurrentWindow().setAlwaysOnBottom(next);
+    updateSettings({ desktopMode: next });
+  };
+
+  const startWindowDrag = (event: ReactMouseEvent<HTMLElement>) => {
+    if (!isTauriRuntime() || event.button !== 0) return;
+    if (event.target instanceof Element && event.target.closest("button, input, select")) return;
+    void getCurrentWindow().startDragging();
+  };
+
+  const beginLogin = async () => {
+    if (!isTauriRuntime()) return;
+    setLoggingIn(true);
+    setError(null);
+    try {
+      const login = await invoke<LoginStart>("begin_login");
+      await openUrl(login.authUrl);
+    } catch (cause) {
+      setLoggingIn(false);
+      setError(String(cause));
+    }
+  };
+
+  const logout = async () => {
+    if (!isTauriRuntime()) {
+      setSnapshot(null);
+      setSettingsOpen(false);
+      return;
+    }
+    await invoke("logout");
+    setSnapshot(null);
+    setSettingsOpen(false);
+    await refresh();
+  };
+
+  const runway = useMemo(() => calculateRunway(samples, snapshot), [samples, snapshot]);
+  const paceBudget = useMemo(() => calculatePaceBudget(snapshot), [snapshot, now]);
+  const remaining = snapshot?.weekly?.remainingPercent ?? 0;
+  const fiveHourRemaining = snapshot?.fiveHour?.remainingPercent ?? null;
+  const statusTone = getStatusTone(Math.min(remaining, fiveHourRemaining ?? 100));
+  const fiveHourTone = getStatusTone(fiveHourRemaining ?? 100);
+  const isConnected = snapshot?.account.connected ?? false;
+
+  return (
+    <main className="widget-shell">
+      <section className={`glass-panel ${settingsOpen ? "settings-visible" : ""}`}>
+        <div className="ambient ambient-one" />
+        <div className="ambient ambient-two" />
+
+        <header className="titlebar" data-tauri-drag-region onMouseDown={startWindowDrag}>
+          <div className="brand" data-tauri-drag-region>
+            <div className="brand-mark"><Sparkles size={15} /></div>
+            <div data-tauri-drag-region>
+              <strong>CODEX</strong>
+              <span>weekly pulse</span>
+            </div>
+          </div>
+          <div className="window-actions">
+            <button className="icon-button" title="Settings" onClick={() => setSettingsOpen((open) => !open)}>
+              <Settings2 size={16} />
+            </button>
+            <button className="icon-button" title="Hide to tray" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()}>
+              <Minus size={17} />
+            </button>
+          </div>
+        </header>
+
+        {!isConnected ? (
+          <div className="connect-view">
+            <div className="connect-orbit">
+              <div className="connect-core"><Sparkles size={29} /></div>
+            </div>
+            <div className="eyebrow">Your usage, at a glance</div>
+            <h1>Connect your Codex account</h1>
+            <p>A secure browser window will open. Your sign-in stays managed by Codex.</p>
+            <button className="primary-button" onClick={() => void beginLogin()} disabled={loggingIn || loading}>
+              {loggingIn || loading ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}
+              {loggingIn ? "Waiting for browser…" : loading ? "Checking Codex…" : "Connect with Codex"}
+              {!loggingIn && !loading && <ArrowUpRight size={16} />}
+            </button>
+            {loggingIn && <button className="text-button" onClick={() => void refresh()}>I finished signing in</button>}
+            {error && <div className="inline-error"><CircleAlert size={15} /><span>{error}</span></div>}
+          </div>
+        ) : settingsOpen ? (
+          <div className="settings-view">
+            <div className="settings-heading">
+              <div>
+                <span className="eyebrow">Appearance & behavior</span>
+                <h2>Widget settings</h2>
+              </div>
+              <button className="icon-button" onClick={() => setSettingsOpen(false)}><X size={17} /></button>
+            </div>
+
+            <div className="setting-card featured-setting">
+              <div className="setting-title">
+                <span><Eye size={16} /> Transparency</span>
+                <b>{settings.opacity}%</b>
+              </div>
+              <input
+                aria-label="Widget transparency"
+                type="range"
+                min="30"
+                max="100"
+                value={settings.opacity}
+                onChange={(event) => updateSettings({ opacity: Number(event.target.value) })}
+              />
+              <div className="range-hints"><span>Airy</span><span>Solid</span></div>
+            </div>
+
+            <div className="setting-card">
+              <div className="setting-title">
+                <span><Sparkles size={16} /> Glass blur</span>
+                <b>{settings.blur}px</b>
+              </div>
+              <input
+                aria-label="Background blur"
+                type="range"
+                min="0"
+                max="36"
+                value={settings.blur}
+                onChange={(event) => updateSettings({ blur: Number(event.target.value) })}
+              />
+            </div>
+
+            <div className="setting-row">
+              <div><strong>Desktop mode</strong><span>Optional: stay behind windows</span></div>
+              <Toggle checked={settings.desktopMode} onChange={(next) => void toggleDesktopMode(next)} />
+            </div>
+            <div className="setting-row">
+              <div><strong>Start with Windows</strong><span>Keep your pulse ready</span></div>
+              <Toggle checked={settings.startWithWindows} onChange={(next) => void toggleAutostart(next)} />
+            </div>
+            <div className="setting-row">
+              <div><strong>Refresh interval</strong><span>Lightweight account check</span></div>
+              <select
+                value={settings.refreshSeconds}
+                onChange={(event) => updateSettings({ refreshSeconds: Number(event.target.value) })}
+              >
+                <option value={60}>1 min</option>
+                <option value={90}>90 sec</option>
+                <option value={180}>3 min</option>
+                <option value={300}>5 min</option>
+              </select>
+            </div>
+
+            <div className="account-strip">
+              <div className="avatar">{snapshot?.account.email?.[0]?.toUpperCase() ?? "C"}</div>
+              <div><strong>{snapshot?.account.email ?? "Codex account"}</strong><span>{snapshot?.account.plan ?? "Connected"} plan</span></div>
+              <button title="Disconnect" onClick={() => void logout()}><LogOut size={16} /></button>
+            </div>
+          </div>
+        ) : (
+          <div className="dashboard-view">
+            <div className="status-line">
+              <span className={`live-dot ${statusTone}`} />
+              <span>{snapshot?.account.plan ?? "Codex"} plan</span>
+              <span className="status-spacer" />
+              <button className="refresh-button" onClick={() => void refresh()} disabled={loading}>
+                <RefreshCw className={loading ? "spin" : ""} size={13} />
+                {loading ? "Syncing" : "Live"}
+              </button>
+            </div>
+
+            {snapshot?.weekly ? (
+              <>
+                <div className="hero-usage">
+                  <UsageRing remaining={remaining} />
+                  <div className="usage-copy">
+                    <span className="eyebrow">Weekly allowance</span>
+                    <h1>{statusTone === "critical" ? "Running low" : statusTone === "warn" ? "Use thoughtfully" : "You’re in good shape"}</h1>
+                    <p><TimerReset size={14} /> {formatCountdown(snapshot.weekly.resetAt, now)}</p>
+                  </div>
+                </div>
+
+                {snapshot.fiveHour ? (
+                  <div className={`short-window-card ${fiveHourTone}`}>
+                    <div className="short-window-heading">
+                      <span><Timer size={16} /> 5-hour window</span>
+                      <strong>{Math.round(snapshot.fiveHour.remainingPercent)}% left</strong>
+                    </div>
+                    <div className="allowance-bar" aria-label={`${Math.round(snapshot.fiveHour.remainingPercent)} percent of five-hour allowance remaining`}>
+                      <span style={{ width: `${snapshot.fiveHour.remainingPercent}%` }} />
+                    </div>
+                    <div className="short-window-meta">
+                      <span>{formatCountdown(snapshot.fiveHour.resetAt, now)}</span>
+                      <span>resets {formatReset(snapshot.fiveHour.resetAt)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="reset-banner">
+                    <CalendarClock size={17} />
+                    <div><span>Weekly reset</span><strong>{formatReset(snapshot.weekly.resetAt)}</strong></div>
+                    <ChevronRight size={15} />
+                  </div>
+                )}
+
+                <div className="metric-grid">
+                  <article>
+                    <div className="metric-icon violet"><Activity size={17} /></div>
+                    <span>Today</span>
+                    <strong>{formatTokens(snapshot.tokensToday)}</strong>
+                    <small>tokens {snapshot.tokenBucketDate ? `· ${snapshot.tokenBucketDate}` : ""}</small>
+                  </article>
+                  <article>
+                    <div className="metric-icon blue"><Gauge size={17} /></div>
+                    <span>Pace budget</span>
+                    <strong>{paceBudget == null ? "Learning" : `${paceBudget.toFixed(1)} pts`}</strong>
+                    <small>through midnight</small>
+                  </article>
+                  <article>
+                    <div className="metric-icon mint"><TimerReset size={17} /></div>
+                    <span>Runway</span>
+                    <strong>{runway == null ? "Learning" : runway > 168 ? "7d+" : `${runway.toFixed(1)}h`}</strong>
+                    <small>at recent pace</small>
+                  </article>
+                </div>
+
+                <footer>
+                  <span>Updated {Math.max(0, Math.floor((now - snapshot.fetchedAt) / 1000))}s ago</span>
+                  <span>{snapshot.creditsUnlimited ? "Unlimited credits" : snapshot.creditsBalance ? `${snapshot.creditsBalance} credits` : snapshot.fiveHour ? "5-hour + weekly" : "Weekly-only mode"}</span>
+                </footer>
+              </>
+            ) : (
+              <div className="no-usage-view">
+                <div className="metric-icon violet large"><Activity size={22} /></div>
+                <h2>Weekly usage unavailable</h2>
+                <p>Codex is connected, but this account did not return a weekly usage bucket yet.</p>
+                <button className="secondary-button" onClick={() => void refresh()}><RefreshCw size={16} /> Try again</button>
+              </div>
+            )}
+            {error && <div className="toast-error"><CircleAlert size={14} /> Data may be stale</div>}
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}

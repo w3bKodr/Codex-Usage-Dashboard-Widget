@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissions for the Codex Weekly widget","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-set-always-on-bottom","core:window:allow-start-dragging","core:window:allow-set-position","core:window:allow-hide","autostart:default","opener:default"]}}

@@ -1,0 +1,16 @@
+node_modules/
+.npm-cache/
+dist/
+
+src-tauri/target/
+
+.env
+.env.*
+!.env.example
+
+# Local editor and OS files
+.vscode/
+.idea/
+*.user
+Thumbs.db
+Desktop.ini
