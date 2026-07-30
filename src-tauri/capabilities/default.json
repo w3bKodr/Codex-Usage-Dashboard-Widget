@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the Codex Weekly widget",
+  "description": "Permissions for the Codex Usage Dashboard widget",
   "windows": ["main"],
   "permissions": [
     "core:default",

@@ -121,7 +121,7 @@ function getStatusTone(remaining: number): "good" | "warn" | "critical" {
   return "good";
 }
 
-function calculateRunway(samples: UsageSample[], current?: DashboardSnapshot | null): number | null {
+function calculateEstimatedHoursLeft(samples: UsageSample[], current?: DashboardSnapshot | null): number | null {
   const weekly = current?.weekly;
   if (!weekly || !weekly.resetAt) return null;
   const relevant = samples
@@ -143,7 +143,7 @@ function calculateRunway(samples: UsageSample[], current?: DashboardSnapshot | n
   return median > 0 ? weekly.remainingPercent / median : null;
 }
 
-function calculatePaceBudget(snapshot?: DashboardSnapshot | null): number | null {
+function calculateSuggestedUseToday(snapshot?: DashboardSnapshot | null): number | null {
   const weekly = snapshot?.weekly;
   if (!weekly?.resetAt) return null;
   const now = new Date();
@@ -360,8 +360,8 @@ export default function App() {
     await refresh();
   };
 
-  const runway = useMemo(() => calculateRunway(samples, snapshot), [samples, snapshot]);
-  const paceBudget = useMemo(() => calculatePaceBudget(snapshot), [snapshot, now]);
+  const estimatedHoursLeft = useMemo(() => calculateEstimatedHoursLeft(samples, snapshot), [samples, snapshot]);
+  const suggestedUseToday = useMemo(() => calculateSuggestedUseToday(snapshot), [snapshot, now]);
   const remaining = snapshot?.weekly?.remainingPercent ?? 0;
   const fiveHourRemaining = snapshot?.fiveHour?.remainingPercent ?? null;
   const statusTone = getStatusTone(Math.min(remaining, fiveHourRemaining ?? 100));
@@ -379,7 +379,7 @@ export default function App() {
             <div className="brand-mark"><Sparkles size={15} /></div>
             <div data-tauri-drag-region>
               <strong>CODEX</strong>
-              <span>weekly pulse</span>
+              <span>usage dashboard</span>
             </div>
           </div>
           <div className="window-actions">
@@ -530,15 +530,15 @@ export default function App() {
                   </article>
                   <article>
                     <div className="metric-icon blue"><Gauge size={17} /></div>
-                    <span>Pace budget</span>
-                    <strong>{paceBudget == null ? "Learning" : `${paceBudget.toFixed(1)} pts`}</strong>
-                    <small>through midnight</small>
+                    <span>Suggested use today</span>
+                    <strong>{suggestedUseToday == null ? "Unavailable" : `${suggestedUseToday.toFixed(1)}%`}</strong>
+                    <small>{suggestedUseToday == null ? "reset time needed" : "of weekly limit · stay on track"}</small>
                   </article>
                   <article>
                     <div className="metric-icon mint"><TimerReset size={17} /></div>
-                    <span>Runway</span>
-                    <strong>{runway == null ? "Learning" : runway > 168 ? "7d+" : `${runway.toFixed(1)}h`}</strong>
-                    <small>at recent pace</small>
+                    <span>Estimated time left</span>
+                    <strong>{estimatedHoursLeft == null ? "Collecting data" : estimatedHoursLeft > 168 ? "7+ days" : `${estimatedHoursLeft.toFixed(1)} hours`}</strong>
+                    <small>{estimatedHoursLeft == null ? "needs 30+ min of usage" : "if your recent usage continues"}</small>
                   </article>
                 </div>
 

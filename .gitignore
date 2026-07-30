@@ -3,6 +3,8 @@ node_modules/
 dist/
 
 src-tauri/target/
+artifacts/
+.build/
 
 .env
 .env.*

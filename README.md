@@ -1,4 +1,4 @@
-# Codex Weekly
+# Codex Usage Dashboard
 
 A lightweight Windows desktop widget for the current Codex usage allowances.
 
@@ -7,8 +7,8 @@ A lightweight Windows desktop widget for the current Codex usage allowances.
 - Five-hour allowance remaining and its rolling reset time, when returned by Codex
 - Weekly allowance remaining and the next reset time
 - Tokens used today (when Codex returns daily usage buckets)
-- A suggested allowance budget through midnight
-- Estimated runway after enough local samples have accumulated
+- A plain-language suggestion for how much weekly allowance to use today
+- Estimated time until the weekly limit is exhausted, after enough local samples accumulate
 - Connected plan and optional credit balance
 
 Allowance windows are classified by their reported duration, rather than assuming that
@@ -39,13 +39,21 @@ The minimize button hides it to the system tray; click the tray icon to bring it
 
 - Windows 10 or Windows 11 with WebView2
 
-The release installer includes the Codex CLI runtime used for account login and usage
-queries. Development mode uses the matching runtime installed in this project's
-`node_modules` directory.
+The installer places the OpenAI-signed Codex CLI runtime beside the widget as an
+application resource. Development mode uses the matching runtime installed in this
+project's `node_modules`.
 
 To test a different Codex build, set `CODEX_WIDGET_CODEX_PATH` to the full path of its
 executable before launching the widget. This override takes priority over the bundled
 runtime.
+
+Use the **Start with Windows** toggle in Widget settings. It registers the installed
+executable directly. Do not copy the raw `.exe` into the Startup folder: portable builds
+must remain beside their `codex-runtime` directory.
+
+The interactive Windows installer also asks whether the widget should start when you
+sign in. It does not enable startup silently, and the choice can be changed later in
+Widget settings.
 
 ## Development
 

@@ -1,12 +1,12 @@
 [package]
-name = "codex-weekly-widget"
-version = "0.1.1"
-description = "A transparent weekly usage widget for Codex"
-authors = ["Codex Weekly"]
+name = "codex-usage-dashboard"
+version = "0.1.4"
+description = "A transparent Codex usage dashboard for Windows"
+authors = ["Codex Usage Dashboard"]
 edition = "2021"
 
 [lib]
-name = "codex_weekly_widget_lib"
+name = "codex_usage_dashboard_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

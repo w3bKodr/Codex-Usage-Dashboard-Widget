@@ -198,8 +198,8 @@ impl CodexClient {
                 "initialize",
                 Some(json!({
                     "clientInfo": {
-                        "name": "codex_weekly_widget",
-                        "title": "Codex Weekly Widget",
+                        "name": "codex_usage_dashboard",
+                        "title": "Codex Usage Dashboard",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 })),
@@ -423,7 +423,7 @@ fn build_tray(app: &tauri::App) -> Result<()> {
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
     let menu = MenuBuilder::new(app).items(&[&show, &refresh, &quit]).build()?;
     let mut builder = TrayIconBuilder::new()
-        .tooltip("Codex Weekly")
+        .tooltip("Codex Usage Dashboard")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -468,14 +468,18 @@ fn build_tray(app: &tauri::App) -> Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Codex Usage Dashboard")
+                .build(),
+        )
         .setup(|app| {
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::App("index.html".into()),
             )
-            .title("Codex Weekly")
+            .title("Codex Usage Dashboard")
             .inner_size(400.0, 620.0)
             .min_inner_size(400.0, 620.0)
             .max_inner_size(400.0, 620.0)
@@ -499,7 +503,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![get_dashboard, begin_login, logout])
         .run(tauri::generate_context!())
-        .expect("error while running Codex Weekly");
+        .expect("error while running Codex Usage Dashboard");
 }
 
 #[cfg(test)]
