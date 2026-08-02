@@ -20,7 +20,7 @@ if Codex temporarily returns only weekly usage or switches the order of the two 
 Choose **Connect with Codex** to open the Codex-managed ChatGPT login page in your
 browser. The widget talks to the locally installed `codex app-server` process and does
 not read, copy, or store account tokens itself. Preferences and anonymous usage samples
-used for the runway estimate stay in the widget's local WebView storage.
+used for the estimated-time calculation stay in the widget's local WebView storage.
 
 ## Appearance and desktop behavior
 

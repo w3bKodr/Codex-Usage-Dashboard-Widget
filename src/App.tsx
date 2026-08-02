@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
@@ -12,6 +12,7 @@ import {
   CircleAlert,
   Eye,
   Gauge,
+  Info,
   LoaderCircle,
   LogOut,
   Minus,
@@ -143,7 +144,7 @@ function calculateEstimatedHoursLeft(samples: UsageSample[], current?: Dashboard
   return median > 0 ? weekly.remainingPercent / median : null;
 }
 
-function calculateSuggestedUseToday(snapshot?: DashboardSnapshot | null): number | null {
+function calculateSuggestedRemainingShareToday(snapshot?: DashboardSnapshot | null): number | null {
   const weekly = snapshot?.weekly;
   if (!weekly?.resetAt) return null;
   const now = new Date();
@@ -153,7 +154,18 @@ function calculateSuggestedUseToday(snapshot?: DashboardSnapshot | null): number
   const totalRemainingMs = resetMs - now.getTime();
   if (totalRemainingMs <= 0) return 0;
   const horizonMs = Math.max(0, Math.min(midnight.getTime(), resetMs) - now.getTime());
-  return weekly.remainingPercent * (horizonMs / totalRemainingMs);
+  return Math.min(100, (horizonMs / totalRemainingMs) * 100);
+}
+
+function MetricInfo({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="metric-info">
+      <button type="button" aria-label={label} className="metric-info-button">
+        <Info size={11} aria-hidden="true" />
+      </button>
+      <span className="metric-tooltip" role="tooltip">{children}</span>
+    </span>
+  );
 }
 
 function UsageRing({ remaining }: { remaining: number }) {
@@ -361,8 +373,14 @@ export default function App() {
   };
 
   const estimatedHoursLeft = useMemo(() => calculateEstimatedHoursLeft(samples, snapshot), [samples, snapshot]);
-  const suggestedUseToday = useMemo(() => calculateSuggestedUseToday(snapshot), [snapshot, now]);
+  const suggestedRemainingShareToday = useMemo(
+    () => calculateSuggestedRemainingShareToday(snapshot),
+    [snapshot, now],
+  );
   const remaining = snapshot?.weekly?.remainingPercent ?? 0;
+  const suggestedTotalPointsToday = suggestedRemainingShareToday == null
+    ? null
+    : remaining * suggestedRemainingShareToday / 100;
   const fiveHourRemaining = snapshot?.fiveHour?.remainingPercent ?? null;
   const statusTone = getStatusTone(Math.min(remaining, fiveHourRemaining ?? 100));
   const fiveHourTone = getStatusTone(fiveHourRemaining ?? 100);
@@ -530,15 +548,33 @@ export default function App() {
                   </article>
                   <article>
                     <div className="metric-icon blue"><Gauge size={17} /></div>
-                    <span>Suggested use today</span>
-                    <strong>{suggestedUseToday == null ? "Unavailable" : `${suggestedUseToday.toFixed(1)}%`}</strong>
-                    <small>{suggestedUseToday == null ? "reset time needed" : "of weekly limit · stay on track"}</small>
+                    <div className="metric-label">
+                      <span>Suggested use today</span>
+                      <MetricInfo label="Explain suggested use today">
+                        {suggestedRemainingShareToday == null ? (
+                          <>Codex has not provided the weekly reset time, so a daily suggestion cannot be calculated.</>
+                        ) : (
+                          <>Use up to {suggestedRemainingShareToday.toFixed(1)}% of the quota you have left before midnight. That equals about {suggestedTotalPointsToday?.toFixed(1)} percentage points of the total weekly limit and spreads the rest evenly until reset.</>
+                        )}
+                      </MetricInfo>
+                    </div>
+                    <strong>{suggestedRemainingShareToday == null ? "Unavailable" : `${suggestedRemainingShareToday.toFixed(1)}%`}</strong>
+                    <small>{suggestedRemainingShareToday == null ? "reset time needed" : "of quota left"}</small>
                   </article>
                   <article>
                     <div className="metric-icon mint"><TimerReset size={17} /></div>
-                    <span>Estimated time left</span>
-                    <strong>{estimatedHoursLeft == null ? "Collecting data" : estimatedHoursLeft > 168 ? "7+ days" : `${estimatedHoursLeft.toFixed(1)} hours`}</strong>
-                    <small>{estimatedHoursLeft == null ? "needs 30+ min of usage" : "if your recent usage continues"}</small>
+                    <div className="metric-label">
+                      <span>Estimated time left</span>
+                      <MetricInfo label="Explain estimated time left">
+                        {estimatedHoursLeft == null ? (
+                          <>This is not the reset countdown. The dashboard needs at least 30 minutes of usage history before it can estimate when your weekly quota may run out.</>
+                        ) : (
+                          <>This is not the reset countdown. It estimates when your remaining weekly quota may run out if your recent usage rate continues. Short bursts can make this number change quickly.</>
+                        )}
+                      </MetricInfo>
+                    </div>
+                    <strong>{estimatedHoursLeft == null ? "Need data" : estimatedHoursLeft > 168 ? "7+ days" : `${estimatedHoursLeft.toFixed(1)} hours`}</strong>
+                    <small>{estimatedHoursLeft == null ? "needs 30+ min" : "at recent rate"}</small>
                   </article>
                 </div>
 
