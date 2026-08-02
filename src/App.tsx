@@ -144,7 +144,7 @@ function calculateEstimatedHoursLeft(samples: UsageSample[], current?: Dashboard
   return median > 0 ? weekly.remainingPercent / median : null;
 }
 
-function calculateDailyQuotaPoints(snapshot?: DashboardSnapshot | null): number | null {
+function calculateDailyQuotaPercent(snapshot?: DashboardSnapshot | null): number | null {
   const weekly = snapshot?.weekly;
   if (!weekly?.resetAt) return null;
   const nowMs = Date.now();
@@ -371,8 +371,8 @@ export default function App() {
   };
 
   const estimatedHoursLeft = useMemo(() => calculateEstimatedHoursLeft(samples, snapshot), [samples, snapshot]);
-  const dailyQuotaPoints = useMemo(
-    () => calculateDailyQuotaPoints(snapshot),
+  const dailyQuotaPercent = useMemo(
+    () => calculateDailyQuotaPercent(snapshot),
     [snapshot, now],
   );
   const remaining = snapshot?.weekly?.remainingPercent ?? 0;
@@ -546,15 +546,15 @@ export default function App() {
                     <div className="metric-label">
                       <span>Daily budget</span>
                       <MetricInfo label="Explain daily budget">
-                        {dailyQuotaPoints == null ? (
+                        {dailyQuotaPercent == null ? (
                           <>Codex has not provided the weekly reset time, so a daily budget cannot be calculated.</>
                         ) : (
-                          <>You have {remaining.toFixed(1)}% of the total weekly quota left with {formatCountdown(snapshot.weekly?.resetAt, now)}. Dividing that quota evenly across the exact time remaining gives {dailyQuotaPoints.toFixed(1)} percentage points per 24 hours.</>
+                          <>You have {remaining.toFixed(1)}% of your weekly quota left with {formatCountdown(snapshot.weekly?.resetAt, now)}. Dividing it evenly across the exact time remaining gives a daily budget of {dailyQuotaPercent.toFixed(1)}% of the total weekly quota per 24 hours.</>
                         )}
                       </MetricInfo>
                     </div>
-                    <strong>{dailyQuotaPoints == null ? "Unavailable" : `${dailyQuotaPoints.toFixed(1)} pts`}</strong>
-                    <small>{dailyQuotaPoints == null ? "reset time needed" : "per 24 hours"}</small>
+                    <strong>{dailyQuotaPercent == null ? "Unavailable" : `${dailyQuotaPercent.toFixed(1)}%`}</strong>
+                    <small>{dailyQuotaPercent == null ? "reset time needed" : "weekly quota / 24h"}</small>
                   </article>
                   <article>
                     <div className="metric-icon mint"><TimerReset size={17} /></div>
