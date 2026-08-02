@@ -94,8 +94,8 @@ button { color: inherit; }
 .metric-grid span { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
 .metric-grid strong { margin: 4px 0 1px; font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif; font-size: 15px; letter-spacing: -.02em; }
 .metric-grid small { color: rgba(226,230,248,.38); font-size: 8px; }
-.metric-label { min-height: 22px; display: flex; align-items: flex-start; gap: 3px; }
-.metric-label > span:first-child { flex: 1; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
+.metric-label { height: 15px; display: flex; align-items: center; gap: 3px; }
+.metric-label > span:first-child { flex: 1; white-space: nowrap; overflow: visible; text-overflow: clip; line-height: 1; }
 .metric-grid .metric-info { position: static; flex: 0 0 auto; overflow: visible; }
 .metric-info-button { width: 15px; height: 15px; padding: 0; display: grid; place-items: center; border: 1px solid rgba(159,174,230,.24); border-radius: 50%; color: rgba(190,201,241,.72); background: rgba(116,137,211,.08); cursor: help; }
 .metric-info-button:hover, .metric-info-button:focus-visible { color: #fff; border-color: rgba(159,174,230,.52); background: rgba(116,137,211,.2); outline: none; }

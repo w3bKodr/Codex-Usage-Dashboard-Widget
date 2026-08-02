@@ -144,17 +144,15 @@ function calculateEstimatedHoursLeft(samples: UsageSample[], current?: Dashboard
   return median > 0 ? weekly.remainingPercent / median : null;
 }
 
-function calculateSuggestedRemainingShareToday(snapshot?: DashboardSnapshot | null): number | null {
+function calculateDailyQuotaPoints(snapshot?: DashboardSnapshot | null): number | null {
   const weekly = snapshot?.weekly;
   if (!weekly?.resetAt) return null;
-  const now = new Date();
-  const midnight = new Date(now);
-  midnight.setHours(24, 0, 0, 0);
+  const nowMs = Date.now();
   const resetMs = weekly.resetAt * 1000;
-  const totalRemainingMs = resetMs - now.getTime();
+  const totalRemainingMs = resetMs - nowMs;
   if (totalRemainingMs <= 0) return 0;
-  const horizonMs = Math.max(0, Math.min(midnight.getTime(), resetMs) - now.getTime());
-  return Math.min(100, (horizonMs / totalRemainingMs) * 100);
+  const exactDaysRemaining = totalRemainingMs / 86_400_000;
+  return Math.min(weekly.remainingPercent, weekly.remainingPercent / exactDaysRemaining);
 }
 
 function MetricInfo({ label, children }: { label: string; children: ReactNode }) {
@@ -373,14 +371,11 @@ export default function App() {
   };
 
   const estimatedHoursLeft = useMemo(() => calculateEstimatedHoursLeft(samples, snapshot), [samples, snapshot]);
-  const suggestedRemainingShareToday = useMemo(
-    () => calculateSuggestedRemainingShareToday(snapshot),
+  const dailyQuotaPoints = useMemo(
+    () => calculateDailyQuotaPoints(snapshot),
     [snapshot, now],
   );
   const remaining = snapshot?.weekly?.remainingPercent ?? 0;
-  const suggestedTotalPointsToday = suggestedRemainingShareToday == null
-    ? null
-    : remaining * suggestedRemainingShareToday / 100;
   const fiveHourRemaining = snapshot?.fiveHour?.remainingPercent ?? null;
   const statusTone = getStatusTone(Math.min(remaining, fiveHourRemaining ?? 100));
   const fiveHourTone = getStatusTone(fiveHourRemaining ?? 100);
@@ -542,30 +537,30 @@ export default function App() {
                 <div className="metric-grid">
                   <article>
                     <div className="metric-icon violet"><Activity size={17} /></div>
-                    <span>Today</span>
+                    <div className="metric-label"><span>Today</span></div>
                     <strong>{formatTokens(snapshot.tokensToday)}</strong>
                     <small>tokens {snapshot.tokenBucketDate ? `· ${snapshot.tokenBucketDate}` : ""}</small>
                   </article>
                   <article>
                     <div className="metric-icon blue"><Gauge size={17} /></div>
                     <div className="metric-label">
-                      <span>Suggested use today</span>
-                      <MetricInfo label="Explain suggested use today">
-                        {suggestedRemainingShareToday == null ? (
-                          <>Codex has not provided the weekly reset time, so a daily suggestion cannot be calculated.</>
+                      <span>Daily budget</span>
+                      <MetricInfo label="Explain daily budget">
+                        {dailyQuotaPoints == null ? (
+                          <>Codex has not provided the weekly reset time, so a daily budget cannot be calculated.</>
                         ) : (
-                          <>Use up to {suggestedRemainingShareToday.toFixed(1)}% of the quota you have left before midnight. That equals about {suggestedTotalPointsToday?.toFixed(1)} percentage points of the total weekly limit and spreads the rest evenly until reset.</>
+                          <>You have {remaining.toFixed(1)}% of the total weekly quota left with {formatCountdown(snapshot.weekly?.resetAt, now)}. Dividing that quota evenly across the exact time remaining gives {dailyQuotaPoints.toFixed(1)} percentage points per 24 hours.</>
                         )}
                       </MetricInfo>
                     </div>
-                    <strong>{suggestedRemainingShareToday == null ? "Unavailable" : `${suggestedRemainingShareToday.toFixed(1)}%`}</strong>
-                    <small>{suggestedRemainingShareToday == null ? "reset time needed" : "of quota left"}</small>
+                    <strong>{dailyQuotaPoints == null ? "Unavailable" : `${dailyQuotaPoints.toFixed(1)} pts`}</strong>
+                    <small>{dailyQuotaPoints == null ? "reset time needed" : "per 24 hours"}</small>
                   </article>
                   <article>
                     <div className="metric-icon mint"><TimerReset size={17} /></div>
                     <div className="metric-label">
-                      <span>Estimated time left</span>
-                      <MetricInfo label="Explain estimated time left">
+                      <span>Quota lasts</span>
+                      <MetricInfo label="Explain how long the quota lasts">
                         {estimatedHoursLeft == null ? (
                           <>This is not the reset countdown. The dashboard needs at least 30 minutes of usage history before it can estimate when your weekly quota may run out.</>
                         ) : (
