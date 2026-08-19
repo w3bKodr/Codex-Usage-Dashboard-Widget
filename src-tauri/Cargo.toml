@@ -1,6 +1,6 @@
 [package]
 name = "codex-usage-dashboard"
-version = "0.1.7"
+version = "0.1.8"
 description = "A transparent Codex usage dashboard for Windows"
 authors = ["Codex Usage Dashboard"]
 edition = "2021"

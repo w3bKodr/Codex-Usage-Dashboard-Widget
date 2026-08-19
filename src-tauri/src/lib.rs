@@ -480,9 +480,9 @@ pub fn run() {
                 WebviewUrl::App("index.html".into()),
             )
             .title("Codex Usage Dashboard")
-            .inner_size(400.0, 620.0)
-            .min_inner_size(400.0, 620.0)
-            .max_inner_size(400.0, 620.0)
+            .inner_size(400.0, 550.0)
+            .min_inner_size(400.0, 550.0)
+            .max_inner_size(400.0, 550.0)
             .resizable(false)
             .fullscreen(false)
             .decorations(false)
