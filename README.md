@@ -17,7 +17,7 @@
   <img src="assets/readme/widget-dashboard.png" width="400" alt="Codex Usage Dashboard showing weekly and five-hour allowance, daily budget, and recent usage projection" />
 </p>
 
-Codex Usage Dashboard keeps the limits that matter visible without making you interrupt your work to check them. It connects through the locally bundled Codex runtime, stays out of the taskbar, and can sit naturally on the desktop or hide in the system tray.
+Codex Usage Dashboard Widget keeps the limits that matter visible without making you interrupt your work to check them. It connects through the locally bundled Codex runtime, stays out of the taskbar, and can sit naturally on the desktop or hide in the system tray.
 
 > [!NOTE]
 > This is an independent community project. It is not an official OpenAI product and is not affiliated with or endorsed by OpenAI.
