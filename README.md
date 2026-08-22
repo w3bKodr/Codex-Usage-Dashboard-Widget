@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/codex-usage-dashboard-icon.png" width="168" alt="Codex Usage Dashboard icon" />
 
-  <h1>Codex Usage Dashboard</h1>
+  <h1>Codex Usage Dashboard Widget</h1>
 
   <p><strong>A polished Windows desktop widget for understanding your Codex usage at a glance.</strong></p>
 
