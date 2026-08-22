@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   LogOut,
   Minus,
+  Palette,
   RefreshCw,
   Settings2,
   ShieldCheck,
@@ -34,11 +35,19 @@ import type {
 const SETTINGS_KEY = "codex-weekly-widget.settings.v2";
 const SAMPLES_KEY = "codex-weekly-widget.samples.v1";
 const POSITION_KEY = "codex-weekly-widget.position.v2";
+const REFRESH_SECONDS = 90;
+
+const BACKGROUND_PRESETS = [
+  { color: "#111524", label: "Midnight" },
+  { color: "#19132b", label: "Violet" },
+  { color: "#0e2324", label: "Teal" },
+  { color: "#251718", label: "Ember" },
+  { color: "#17191d", label: "Graphite" },
+] as const;
 
 const defaultSettings: WidgetSettings = {
-  opacity: 82,
-  blur: 24,
-  refreshSeconds: 90,
+  opacity: 100,
+  backgroundColor: "#111524",
   startWithWindows: false,
   desktopMode: false,
 };
@@ -73,10 +82,33 @@ const previewSnapshot: DashboardSnapshot = {
 
 function loadSettings(): WidgetSettings {
   try {
-    return { ...defaultSettings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<WidgetSettings>;
+    const backgroundColor = typeof saved.backgroundColor === "string" && /^#[0-9a-f]{6}$/i.test(saved.backgroundColor)
+      ? saved.backgroundColor.toLowerCase()
+      : defaultSettings.backgroundColor;
+    return {
+      opacity: typeof saved.opacity === "number" ? Math.max(30, Math.min(100, saved.opacity)) : defaultSettings.opacity,
+      backgroundColor,
+      startWithWindows: saved.startWithWindows === true,
+      desktopMode: saved.desktopMode === true,
+    };
   } catch {
     return defaultSettings;
   }
+}
+
+function colorChannelStops(hex: string): { highlight: string; base: string; shadow: string } {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  const value = match?.[1] ?? "111524";
+  const channels = [0, 2, 4].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16));
+  const mix = (target: number, amount: number) => channels
+    .map((channel) => Math.round(channel + (target - channel) * amount))
+    .join(", ");
+  return {
+    highlight: mix(255, 0.08),
+    base: channels.join(", "),
+    shadow: mix(0, 0.48),
+  };
 }
 
 function loadSamples(): UsageSample[] {
@@ -122,26 +154,84 @@ function getStatusTone(remaining: number): "good" | "warn" | "critical" {
   return "good";
 }
 
-function calculateEstimatedHoursLeft(samples: UsageSample[], current?: DashboardSnapshot | null): number | null {
-  const weekly = current?.weekly;
-  if (!weekly || !weekly.resetAt) return null;
+type QuotaProjection = {
+  minutesLeft: number;
+  observationMinutes: number;
+  percentUsed: number;
+  windowLabel: "5-hour" | "weekly";
+};
+
+type QuotaProjectionState = {
+  projection: QuotaProjection | null;
+  hasEnoughHistory: boolean;
+};
+
+const RATE_LOOKBACK_MS = 15 * 60_000;
+const MIN_RATE_SPAN_MS = 4 * 60_000;
+const MIN_MEASURABLE_CHANGE = 0.05;
+
+function calculateWindowProjection(
+  samples: UsageSample[],
+  window: DashboardSnapshot["weekly"],
+  windowKind: "fiveHour" | "weekly",
+): QuotaProjectionState {
+  if (!window?.resetAt) return { projection: null, hasEnoughHistory: false };
   const relevant = samples
-    .filter((sample) => sample.resetAt === weekly.resetAt)
+    .filter((sample) => (
+      sample.resetAt === window.resetAt
+      && (sample.windowKind === windowKind || (windowKind === "weekly" && sample.windowKind == null))
+    ))
     .sort((a, b) => a.capturedAt - b.capturedAt)
-    .slice(-24);
-  if (relevant.length < 3 || relevant.at(-1)!.capturedAt - relevant[0].capturedAt < 30 * 60_000) {
-    return null;
+    .slice(-120);
+  const newest = relevant.at(-1);
+  if (!newest) return { projection: null, hasEnoughHistory: false };
+
+  const recent = relevant.filter((sample) => sample.capturedAt >= newest.capturedAt - RATE_LOOKBACK_MS);
+  const oldest = recent[0];
+  const elapsedMs = newest.capturedAt - oldest.capturedAt;
+  if (recent.length < 2 || elapsedMs < MIN_RATE_SPAN_MS) {
+    return { projection: null, hasEnoughHistory: false };
   }
-  const rates: number[] = [];
-  for (let index = 1; index < relevant.length; index += 1) {
-    const deltaUsage = relevant[index].usedPercent - relevant[index - 1].usedPercent;
-    const deltaHours = (relevant[index].capturedAt - relevant[index - 1].capturedAt) / 3_600_000;
-    if (deltaUsage > 0 && deltaHours > 0) rates.push(deltaUsage / deltaHours);
+
+  // Measuring across the whole interval intentionally includes idle time between
+  // Codex percentage updates. Counting only the intervals with a change makes a
+  // brief reported jump look like a sustained burn rate.
+  const percentUsed = newest.usedPercent - oldest.usedPercent;
+  if (percentUsed < MIN_MEASURABLE_CHANGE) {
+    return { projection: null, hasEnoughHistory: true };
   }
-  if (!rates.length) return null;
-  rates.sort((a, b) => a - b);
-  const median = rates[Math.floor(rates.length / 2)];
-  return median > 0 ? weekly.remainingPercent / median : null;
+
+  const percentPerMinute = percentUsed / (elapsedMs / 60_000);
+  return {
+    hasEnoughHistory: true,
+    projection: {
+      minutesLeft: window.remainingPercent / percentPerMinute,
+      observationMinutes: elapsedMs / 60_000,
+      percentUsed,
+      windowLabel: windowKind === "fiveHour" ? "5-hour" : "weekly",
+    },
+  };
+}
+
+function calculateQuotaProjection(samples: UsageSample[], current?: DashboardSnapshot | null): QuotaProjectionState {
+  const fiveHour = calculateWindowProjection(samples, current?.fiveHour, "fiveHour");
+  const weekly = calculateWindowProjection(samples, current?.weekly, "weekly");
+  const projections = [fiveHour.projection, weekly.projection]
+    .filter((value): value is QuotaProjection => value != null)
+    .sort((a, b) => a.minutesLeft - b.minutesLeft);
+  return {
+    projection: projections[0] ?? null,
+    hasEnoughHistory: fiveHour.hasEnoughHistory || weekly.hasEnoughHistory,
+  };
+}
+
+function formatProjectedTime(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return "Under 1m";
+  if (minutes >= 7 * 24 * 60) return "168h+";
+  const roundedMinutes = Math.max(1, Math.round(minutes));
+  const hours = Math.floor(roundedMinutes / 60);
+  const remainder = roundedMinutes % 60;
+  return hours > 0 ? `${hours}h ${remainder}m` : `${remainder}m`;
 }
 
 function calculateDailyQuotaPercent(snapshot?: DashboardSnapshot | null): number | null {
@@ -236,15 +326,24 @@ export default function App() {
       const next = await invoke<DashboardSnapshot>("get_dashboard");
       setSnapshot(next);
       setError(null);
-      if (next.weekly) {
+      if (next.weekly || next.fiveHour) {
         setSamples((current) => {
-          const sample: UsageSample = {
-            capturedAt: Date.now(),
-            usedPercent: next.weekly!.usedPercent,
-            resetAt: next.weekly!.resetAt ?? null,
-          };
+          const capturedAt = Date.now();
+          const newSamples: UsageSample[] = [];
+          if (next.weekly) newSamples.push({
+            capturedAt,
+            usedPercent: next.weekly.usedPercent,
+            resetAt: next.weekly.resetAt ?? null,
+            windowKind: "weekly",
+          });
+          if (next.fiveHour) newSamples.push({
+            capturedAt,
+            usedPercent: next.fiveHour.usedPercent,
+            resetAt: next.fiveHour.resetAt ?? null,
+            windowKind: "fiveHour",
+          });
           const cutoff = Date.now() - 30 * 86_400_000;
-          const compacted = [...current.filter((item) => item.capturedAt >= cutoff), sample].slice(-500);
+          const compacted = [...current.filter((item) => item.capturedAt >= cutoff), ...newSamples].slice(-1_000);
           localStorage.setItem(SAMPLES_KEY, JSON.stringify(compacted));
           return compacted;
         });
@@ -268,9 +367,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setInterval(() => void refresh(), settings.refreshSeconds * 1_000);
+    const timer = window.setInterval(() => void refresh(), REFRESH_SECONDS * 1_000);
     return () => window.clearInterval(timer);
-  }, [refresh, settings.refreshSeconds]);
+  }, [refresh]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -290,7 +389,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     document.documentElement.style.setProperty("--panel-opacity", String(settings.opacity / 100));
-    document.documentElement.style.setProperty("--panel-blur", `${settings.blur}px`);
+    const colors = colorChannelStops(settings.backgroundColor);
+    document.documentElement.style.setProperty("--panel-highlight-rgb", colors.highlight);
+    document.documentElement.style.setProperty("--panel-color-rgb", colors.base);
+    document.documentElement.style.setProperty("--panel-shadow-rgb", colors.shadow);
   }, [settings]);
 
   useEffect(() => {
@@ -370,7 +472,7 @@ export default function App() {
     await refresh();
   };
 
-  const estimatedHoursLeft = useMemo(() => calculateEstimatedHoursLeft(samples, snapshot), [samples, snapshot]);
+  const quotaProjection = useMemo(() => calculateQuotaProjection(samples, snapshot), [samples, snapshot]);
   const dailyQuotaPercent = useMemo(
     () => calculateDailyQuotaPercent(snapshot),
     [snapshot, now],
@@ -449,17 +551,31 @@ export default function App() {
 
             <div className="setting-card">
               <div className="setting-title">
-                <span><Sparkles size={16} /> Glass blur</span>
-                <b>{settings.blur}px</b>
+                <span><Palette size={16} /> Background color</span>
+                <b>{settings.backgroundColor.toUpperCase()}</b>
               </div>
-              <input
-                aria-label="Background blur"
-                type="range"
-                min="0"
-                max="36"
-                value={settings.blur}
-                onChange={(event) => updateSettings({ blur: Number(event.target.value) })}
-              />
+              <div className="color-options">
+                {BACKGROUND_PRESETS.map((preset) => (
+                  <button
+                    key={preset.color}
+                    type="button"
+                    className={`color-swatch ${settings.backgroundColor.toLowerCase() === preset.color ? "selected" : ""}`}
+                    style={{ backgroundColor: preset.color }}
+                    aria-label={`Use ${preset.label} background`}
+                    title={preset.label}
+                    onClick={() => updateSettings({ backgroundColor: preset.color })}
+                  />
+                ))}
+                <label className="custom-color" title="Choose a custom background color">
+                  <input
+                    aria-label="Custom background color"
+                    type="color"
+                    value={settings.backgroundColor}
+                    onChange={(event) => updateSettings({ backgroundColor: event.target.value })}
+                  />
+                  <span>Custom</span>
+                </label>
+              </div>
             </div>
 
             <div className="setting-row">
@@ -470,19 +586,6 @@ export default function App() {
               <div><strong>Start with Windows</strong><span>Keep your pulse ready</span></div>
               <Toggle checked={settings.startWithWindows} onChange={(next) => void toggleAutostart(next)} />
             </div>
-            <div className="setting-row">
-              <div><strong>Refresh interval</strong><span>Lightweight account check</span></div>
-              <select
-                value={settings.refreshSeconds}
-                onChange={(event) => updateSettings({ refreshSeconds: Number(event.target.value) })}
-              >
-                <option value={60}>1 min</option>
-                <option value={90}>90 sec</option>
-                <option value={180}>3 min</option>
-                <option value={300}>5 min</option>
-              </select>
-            </div>
-
             <div className="account-strip">
               <div className="avatar">{snapshot?.account.email?.[0]?.toUpperCase() ?? "C"}</div>
               <div><strong>{snapshot?.account.email ?? "Codex account"}</strong><span>{snapshot?.account.plan ?? "Connected"} plan</span></div>
@@ -561,15 +664,17 @@ export default function App() {
                     <div className="metric-label">
                       <span>Quota lasts</span>
                       <MetricInfo label="Explain how long the quota lasts">
-                        {estimatedHoursLeft == null ? (
-                          <>This is not the reset countdown. The dashboard needs at least 30 minutes of usage history before it can estimate when your weekly quota may run out.</>
+                        {quotaProjection.projection ? (
+                          <>Based on {quotaProjection.projection.percentUsed.toFixed(1)}% used over the last {Math.round(quotaProjection.projection.observationMinutes)} minutes, your {quotaProjection.projection.windowLabel} quota would run out in about {formatProjectedTime(quotaProjection.projection.minutesLeft)} if that rate continues. Idle time is included.</>
+                        ) : quotaProjection.hasEnoughHistory ? (
+                          <>No measurable quota use was detected in the last 15 minutes, so there is no active burn rate to project.</>
                         ) : (
-                          <>This is not the reset countdown. It estimates when your remaining weekly quota may run out if your recent usage rate continues. Short bursts can make this number change quickly.</>
+                          <>The dashboard is collecting percentage samples. It needs at least 4 minutes of history before estimating how long your quota will last.</>
                         )}
                       </MetricInfo>
                     </div>
-                    <strong>{estimatedHoursLeft == null ? "Need data" : estimatedHoursLeft > 168 ? "7+ days" : `${estimatedHoursLeft.toFixed(1)} hours`}</strong>
-                    <small>{estimatedHoursLeft == null ? "needs 30+ min" : "at recent rate"}</small>
+                    <strong>{quotaProjection.projection ? formatProjectedTime(quotaProjection.projection.minutesLeft) : quotaProjection.hasEnoughHistory ? "Idle" : "Collecting"}</strong>
+                    <small>{quotaProjection.projection ? `${quotaProjection.projection.windowLabel} · recent rate` : quotaProjection.hasEnoughHistory ? "no recent quota use" : "needs 4+ min"}</small>
                   </article>
                 </div>
 

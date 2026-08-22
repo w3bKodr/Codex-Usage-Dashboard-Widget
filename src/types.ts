@@ -32,8 +32,7 @@ export type LoginStart = {
 
 export type WidgetSettings = {
   opacity: number;
-  blur: number;
-  refreshSeconds: number;
+  backgroundColor: string;
   startWithWindows: boolean;
   desktopMode: boolean;
 };
@@ -42,4 +41,5 @@ export type UsageSample = {
   capturedAt: number;
   usedPercent: number;
   resetAt: number | null;
+  windowKind?: "fiveHour" | "weekly";
 };

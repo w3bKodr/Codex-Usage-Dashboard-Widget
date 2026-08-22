@@ -3,8 +3,10 @@
   color: #f7f8ff;
   background: transparent;
   font-synthesis: none;
-  --panel-opacity: 0.82;
-  --panel-blur: 24px;
+  --panel-opacity: 1;
+  --panel-highlight-rgb: 36, 40, 54;
+  --panel-color-rgb: 17, 21, 36;
+  --panel-shadow-rgb: 9, 11, 19;
   --line: rgba(255, 255, 255, 0.09);
   --muted: rgba(226, 230, 248, 0.62);
 }
@@ -21,9 +23,7 @@ button { color: inherit; }
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 28px;
   background:
-    linear-gradient(155deg, rgba(23, 27, 43, var(--panel-opacity)), rgba(7, 9, 16, var(--panel-opacity)) 58%, rgba(12, 15, 25, var(--panel-opacity)));
-  backdrop-filter: blur(var(--panel-blur)) saturate(145%);
-  -webkit-backdrop-filter: blur(var(--panel-blur)) saturate(145%);
+    linear-gradient(155deg, rgba(var(--panel-highlight-rgb), var(--panel-opacity)), rgba(var(--panel-shadow-rgb), var(--panel-opacity)) 58%, rgba(var(--panel-color-rgb), var(--panel-opacity)));
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 .glass-panel::after { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit; background: linear-gradient(125deg, rgba(255,255,255,.045), transparent 28%); }
@@ -130,6 +130,14 @@ footer { margin-top: 13px; display: flex; justify-content: space-between; color:
 input[type="range"] { width:100%; height:4px; appearance:none; border-radius:10px; outline:0; background:linear-gradient(90deg,#826cf2,#5f85e4); }
 input[type="range"]::-webkit-slider-thumb { width:15px; height:15px; appearance:none; border:3px solid #d8dfff; border-radius:50%; background:#6d74dc; box-shadow:0 3px 10px rgba(0,0,0,.45); cursor:pointer; }
 .range-hints { margin-top:7px; display:flex; justify-content:space-between; color:rgba(226,230,248,.32); font-size:8px; text-transform:uppercase; letter-spacing:.08em; }
+.color-options { display:flex; align-items:center; gap:9px; }
+.color-swatch { position:relative; width:31px; height:31px; padding:0; border:1px solid rgba(255,255,255,.14); border-radius:10px; box-shadow:inset 0 1px 0 rgba(255,255,255,.1); cursor:pointer; transition:.16s ease; }
+.color-swatch:hover { transform:translateY(-1px); border-color:rgba(255,255,255,.34); }
+.color-swatch.selected::after { content:""; position:absolute; inset:8px; border:2px solid white; border-radius:50%; box-shadow:0 1px 5px rgba(0,0,0,.45); }
+.custom-color { height:31px; margin-left:auto; padding:0 8px 0 5px; display:flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:10px; color:var(--muted); background:rgba(255,255,255,.035); font-size:8px; text-transform:uppercase; letter-spacing:.06em; cursor:pointer; }
+.custom-color input { width:20px; height:20px; padding:0; overflow:hidden; border:0; border-radius:6px; background:transparent; cursor:pointer; }
+.custom-color input::-webkit-color-swatch-wrapper { padding:0; }
+.custom-color input::-webkit-color-swatch { border:0; border-radius:5px; }
 .setting-row { min-height:56px; padding:0 3px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,.06); }
 .setting-row strong, .setting-row span { display:block; }
 .setting-row strong { font-size:11px; font-weight:600; }
@@ -138,7 +146,6 @@ input[type="range"]::-webkit-slider-thumb { width:15px; height:15px; appearance:
 .toggle span { width:16px; height:16px; margin:0; border-radius:50%; background:#b6bdd3; transition:.2s; }
 .toggle.on { background:#716ee6; }
 .toggle.on span { transform:translateX(16px); background:white; }
-select { padding:6px 8px; border:1px solid var(--line); border-radius:9px; color:#dce2fb; background:#171b29; outline:0; font-size:9px; }
 .account-strip { height:58px; margin-top:13px; padding:8px 9px; display:flex; align-items:center; gap:9px; border:1px solid var(--line); border-radius:15px; background:rgba(255,255,255,.025); }
 .avatar { width:34px; height:34px; display:grid; place-items:center; border-radius:11px; color:#ded8ff; background:linear-gradient(145deg,#6654c9,#3b4f8d); font-size:12px; font-weight:700; }
 .account-strip > div:nth-child(2) { flex:1; min-width:0; }
