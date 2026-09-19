@@ -260,6 +260,22 @@ fn string_at(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
 }
 
+fn number_at(value: &Value, key: &str) -> Option<f64> {
+    value
+        .get(key)
+        .and_then(|number| number.as_f64().or_else(|| number.as_str()?.parse().ok()))
+}
+
+fn integer_at(value: &Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(|number| {
+        number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .or_else(|| number.as_f64().map(|value| value.round() as i64))
+            .or_else(|| number.as_str()?.parse().ok())
+    })
+}
+
 fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<WeeklyUsage>, Option<String>, bool) {
     let mut snapshots: Vec<(&Value, Option<String>)> = Vec::new();
     if let Some(by_id) = rate_limits.get("rateLimitsByLimitId").and_then(Value::as_object) {
@@ -268,7 +284,13 @@ fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<Weekl
         }
     }
     if let Some(value) = rate_limits.get("rateLimits") {
-        snapshots.push((value, string_at(value, "limitId")));
+        if let Some(values) = value.as_array() {
+            for snapshot in values {
+                snapshots.push((snapshot, string_at(snapshot, "limitId")));
+            }
+        } else {
+            snapshots.push((value, string_at(value, "limitId")));
+        }
     }
 
     let mut best_five_hour: Option<(i64, WeeklyUsage)> = None;
@@ -282,32 +304,53 @@ fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<Weekl
             credits_balance = credits_balance.or_else(|| string_at(credits, "balance"));
             credits_unlimited |= credits.get("unlimited").and_then(Value::as_bool).unwrap_or(false);
         }
-        for key in ["primary", "secondary"] {
-            let Some(window) = snapshot.get(key).filter(|value| !value.is_null()) else { continue };
-            let duration = window.get("windowDurationMins").and_then(Value::as_i64);
-            let used = window.get("usedPercent").and_then(Value::as_f64)
-                .or_else(|| window.get("usedPercent").and_then(Value::as_i64).map(|value| value as f64));
-            let Some(used_percent) = used else { continue };
+        let Some(fields) = snapshot.as_object() else { continue };
+        for (key, window) in fields {
+            let Some(used_percent) = number_at(window, "usedPercent") else { continue };
+            let duration = integer_at(window, "windowDurationMins");
             let candidate = WeeklyUsage {
                 used_percent,
                 remaining_percent: (100.0 - used_percent).clamp(0.0, 100.0),
-                reset_at: window.get("resetsAt").and_then(Value::as_i64),
+                reset_at: integer_at(window, "resetsAt"),
                 window_duration_mins: duration,
                 limit_id: limit_id.clone(),
                 limit_name: limit_name.clone(),
             };
             let codex_bonus = if limit_id.as_deref() == Some("codex") { 10_000 } else { 0 };
+            let normalized_key = key.to_ascii_lowercase();
+            let weekly_hint = normalized_key.contains("weekly")
+                || normalized_key.contains("secondary")
+                || normalized_key.contains("long");
+            let short_hint = normalized_key.contains("primary")
+                || normalized_key.contains("five")
+                || normalized_key.contains("short");
             match duration {
-                Some(minutes) if minutes <= 24 * 60 => {
-                    let score = codex_bonus + if minutes == 300 { 100_000 } else { minutes };
+                // Treat any multi-day window as the long-term allowance. This
+                // remains correct if Codex changes the exact seven-day duration.
+                Some(minutes) if minutes > 2 * 24 * 60 => {
+                    let distance = (minutes - 10_080).abs().min(90_000);
+                    let score = codex_bonus + 100_000 - distance;
+                    if best_weekly.as_ref().is_none_or(|(current, _)| score > *current) {
+                        best_weekly = Some((score, candidate));
+                    }
+                }
+                Some(minutes) => {
+                    let distance = (minutes - 300).abs().min(90_000);
+                    let score = codex_bonus + 100_000 - distance;
                     if best_five_hour.as_ref().is_none_or(|(current, _)| score > *current) {
                         best_five_hour = Some((score, candidate));
                     }
                 }
-                Some(minutes) if minutes >= 7 * 24 * 60 => {
-                    let score = codex_bonus + if minutes == 10_080 { 100_000 } else { minutes };
+                None if weekly_hint => {
+                    let score = codex_bonus + 50_000;
                     if best_weekly.as_ref().is_none_or(|(current, _)| score > *current) {
                         best_weekly = Some((score, candidate));
+                    }
+                }
+                None if short_hint => {
+                    let score = codex_bonus + 50_000;
+                    if best_five_hour.as_ref().is_none_or(|(current, _)| score > *current) {
+                        best_five_hour = Some((score, candidate));
                     }
                 }
                 _ => {}
@@ -322,6 +365,22 @@ fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<Weekl
     )
 }
 
+async fn read_usage_windows(client: &CodexClient) -> (Option<WeeklyUsage>, Option<WeeklyUsage>, Option<String>, bool) {
+    let mut last_result = (None, None, None, false);
+    for attempt in 0..3 {
+        if let Ok(value) = client.request("account/rateLimits/read", None).await {
+            last_result = find_usage_windows(&value);
+            if last_result.0.is_some() || last_result.1.is_some() {
+                return last_result;
+            }
+        }
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))).await;
+        }
+    }
+    last_result
+}
+
 #[tauri::command]
 async fn get_dashboard(client: State<'_, CodexClient>) -> std::result::Result<DashboardSnapshot, String> {
     let account_result = client
@@ -332,7 +391,7 @@ async fn get_dashboard(client: State<'_, CodexClient>) -> std::result::Result<Da
     let connected = account_value
         .and_then(|value| value.get("type"))
         .and_then(Value::as_str)
-        .is_some_and(|kind| kind == "chatgpt");
+        .is_some_and(|kind| matches!(kind, "chatgpt" | "chatgptAuthTokens" | "agentIdentity" | "personalAccessToken"));
     let email = account_value.and_then(|value| string_at(value, "email"));
     let plan = account_value.and_then(|value| string_at(value, "planType"));
 
@@ -351,14 +410,11 @@ async fn get_dashboard(client: State<'_, CodexClient>) -> std::result::Result<Da
     }
 
     let (rate_result, usage_result) = tokio::join!(
-        client.request("account/rateLimits/read", None),
+        read_usage_windows(&client),
         client.request("account/usage/read", None)
     );
 
-    let (five_hour, weekly, credits_balance, credits_unlimited) = rate_result
-        .as_ref()
-        .map(find_usage_windows)
-        .unwrap_or((None, None, None, false));
+    let (five_hour, weekly, credits_balance, credits_unlimited) = rate_result;
     let usage = usage_result.ok();
     let lifetime_tokens = usage
         .as_ref()
@@ -573,5 +629,43 @@ mod tests {
         let (five_hour, weekly, _, _) = find_usage_windows(&limits);
         assert!(five_hour.is_none());
         assert_eq!(weekly.expect("weekly bucket should be selected").remaining_percent, 88.0);
+    }
+
+    #[test]
+    fn accepts_string_encoded_usage_fields_from_newer_servers() {
+        let limits = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {
+                        "usedPercent": "14.5",
+                        "windowDurationMins": "300",
+                        "resetsAt": "200"
+                    },
+                    "secondary": {
+                        "usedPercent": "41",
+                        "windowDurationMins": "10020",
+                        "resetsAt": "300"
+                    }
+                }
+            }
+        });
+        let (five_hour, weekly, _, _) = find_usage_windows(&limits);
+        assert_eq!(five_hour.expect("short window should be selected").remaining_percent, 85.5);
+        let weekly = weekly.expect("changed multi-day window should be selected");
+        assert_eq!(weekly.window_duration_mins, Some(10_020));
+        assert_eq!(weekly.remaining_percent, 59.0);
+    }
+
+    #[test]
+    fn uses_window_name_when_duration_is_temporarily_missing() {
+        let limits = json!({
+            "rateLimits": {
+                "primary": { "usedPercent": 9, "resetsAt": 200 },
+                "secondary": { "usedPercent": 27, "resetsAt": 300 }
+            }
+        });
+        let (five_hour, weekly, _, _) = find_usage_windows(&limits);
+        assert_eq!(five_hour.expect("primary should be selected").remaining_percent, 91.0);
+        assert_eq!(weekly.expect("secondary should be selected").remaining_percent, 73.0);
     }
 }

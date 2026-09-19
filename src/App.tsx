@@ -35,6 +35,7 @@ import type {
 const SETTINGS_KEY = "codex-weekly-widget.settings.v2";
 const SAMPLES_KEY = "codex-weekly-widget.samples.v1";
 const POSITION_KEY = "codex-weekly-widget.position.v2";
+const SNAPSHOT_KEY = "codex-usage-dashboard.last-good-snapshot.v1";
 const REFRESH_SECONDS = 90;
 
 const BACKGROUND_PRESETS = [
@@ -118,6 +119,32 @@ function loadSamples(): UsageSample[] {
   } catch {
     return [];
   }
+}
+
+function loadLastGoodSnapshot(): DashboardSnapshot | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) ?? "null") as DashboardSnapshot | null;
+    if (!value?.account?.connected || (!value.weekly && !value.fiveHour)) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function canReuseWindow(window: DashboardSnapshot["weekly"], fetchedAt: number): boolean {
+  if (!window) return false;
+  if (window.resetAt) return window.resetAt * 1_000 > Date.now();
+  return Date.now() - fetchedAt < 10 * 60_000;
+}
+
+function retainLastKnownWindows(next: DashboardSnapshot, current: DashboardSnapshot | null): DashboardSnapshot {
+  const previous = current?.account.connected ? current : loadLastGoodSnapshot();
+  if (!previous) return next;
+  return {
+    ...next,
+    fiveHour: next.fiveHour ?? (canReuseWindow(previous.fiveHour, previous.fetchedAt) ? previous.fiveHour : null),
+    weekly: next.weekly ?? (canReuseWindow(previous.weekly, previous.fetchedAt) ? previous.weekly : null),
+  };
 }
 
 function formatTokens(value?: number | null): string {
@@ -324,9 +351,14 @@ export default function App() {
         return;
       }
       const next = await invoke<DashboardSnapshot>("get_dashboard");
-      setSnapshot(next);
-      setError(null);
-      if (next.weekly || next.fiveHour) {
+      const displaySnapshot = retainLastKnownWindows(next, snapshot);
+      const responseWasIncomplete = next.account.connected && (!next.weekly || !next.fiveHour);
+      setSnapshot(displaySnapshot);
+      setError(responseWasIncomplete && (displaySnapshot.weekly || displaySnapshot.fiveHour)
+        ? "Codex temporarily omitted a usage window; showing the last valid value."
+        : null);
+      if (displaySnapshot.weekly || displaySnapshot.fiveHour) {
+        localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(displaySnapshot));
         setSamples((current) => {
           const capturedAt = Date.now();
           const newSamples: UsageSample[] = [];
@@ -683,12 +715,36 @@ export default function App() {
                   <span>{snapshot.creditsUnlimited ? "Unlimited credits" : snapshot.creditsBalance ? `${snapshot.creditsBalance} credits` : snapshot.fiveHour ? "5-hour + weekly" : "Weekly-only mode"}</span>
                 </footer>
               </>
+            ) : snapshot?.fiveHour ? (
+              <div className="no-usage-view">
+                <div className="metric-icon blue large"><Timer size={22} /></div>
+                <h2>Weekly usage is syncing</h2>
+                <p>Your five-hour allowance is still available while Codex refreshes the longer-term window.</p>
+                <div className={`short-window-card ${fiveHourTone}`}>
+                  <div className="short-window-heading">
+                    <span><Timer size={16} /> 5-hour window</span>
+                    <strong>{Math.round(snapshot.fiveHour.remainingPercent)}% left</strong>
+                  </div>
+                  <div className="allowance-bar" aria-label={`${Math.round(snapshot.fiveHour.remainingPercent)} percent of five-hour allowance remaining`}>
+                    <span style={{ width: `${snapshot.fiveHour.remainingPercent}%` }} />
+                  </div>
+                  <div className="short-window-meta">
+                    <span>{formatCountdown(snapshot.fiveHour.resetAt, now)}</span>
+                    <span>resets {formatReset(snapshot.fiveHour.resetAt)}</span>
+                  </div>
+                </div>
+                <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
+                  <RefreshCw className={loading ? "spin" : ""} size={16} /> {loading ? "Syncing" : "Try again"}
+                </button>
+              </div>
             ) : (
               <div className="no-usage-view">
                 <div className="metric-icon violet large"><Activity size={22} /></div>
-                <h2>Weekly usage unavailable</h2>
-                <p>Codex is connected, but this account did not return a weekly usage bucket yet.</p>
-                <button className="secondary-button" onClick={() => void refresh()}><RefreshCw size={16} /> Try again</button>
+                <h2>Usage is syncing</h2>
+                <p>Codex is connected but has not returned a usable allowance window yet. The dashboard will keep retrying.</p>
+                <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
+                  <RefreshCw className={loading ? "spin" : ""} size={16} /> {loading ? "Syncing" : "Try again"}
+                </button>
               </div>
             )}
             {error && <div className="toast-error"><CircleAlert size={14} /> Data may be stale</div>}
