@@ -37,6 +37,7 @@ const SAMPLES_KEY = "codex-weekly-widget.samples.v1";
 const POSITION_KEY = "codex-weekly-widget.position.v2";
 const SNAPSHOT_KEY = "codex-usage-dashboard.last-good-snapshot.v1";
 const REFRESH_SECONDS = 90;
+const STALE_FALLBACK_MS = 2 * 60_000;
 
 const BACKGROUND_PRESETS = [
   { color: "#111524", label: "Midnight" },
@@ -131,20 +132,10 @@ function loadLastGoodSnapshot(): DashboardSnapshot | null {
   }
 }
 
-function canReuseWindow(window: DashboardSnapshot["weekly"], fetchedAt: number): boolean {
-  if (!window) return false;
-  if (window.resetAt) return window.resetAt * 1_000 > Date.now();
-  return Date.now() - fetchedAt < 10 * 60_000;
-}
-
-function retainLastKnownWindows(next: DashboardSnapshot, current: DashboardSnapshot | null): DashboardSnapshot {
-  const previous = current?.account.connected ? current : loadLastGoodSnapshot();
-  if (!previous) return next;
-  return {
-    ...next,
-    fiveHour: next.fiveHour ?? (canReuseWindow(previous.fiveHour, previous.fetchedAt) ? previous.fiveHour : null),
-    weekly: next.weekly ?? (canReuseWindow(previous.weekly, previous.fetchedAt) ? previous.weekly : null),
-  };
+function canReuseSnapshot(snapshot?: DashboardSnapshot | null): snapshot is DashboardSnapshot {
+  if (!snapshot?.account.connected || (!snapshot.weekly && !snapshot.fiveHour)) return false;
+  if (Date.now() - snapshot.fetchedAt > STALE_FALLBACK_MS) return false;
+  return [snapshot.weekly, snapshot.fiveHour].some((window) => window && (!window.resetAt || window.resetAt * 1_000 > Date.now()));
 }
 
 function formatTokens(value?: number | null): string {
@@ -351,14 +342,20 @@ export default function App() {
         return;
       }
       const next = await invoke<DashboardSnapshot>("get_dashboard");
-      const displaySnapshot = retainLastKnownWindows(next, snapshot);
-      const responseWasIncomplete = next.account.connected && (!next.weekly || !next.fiveHour);
+      const hasFreshUsage = Boolean(next.weekly || next.fiveHour);
+      const previous = snapshot?.account.connected ? snapshot : loadLastGoodSnapshot();
+      const showingFallback = next.account.connected && !hasFreshUsage && canReuseSnapshot(previous);
+      const displaySnapshot = showingFallback
+        ? { ...previous!, account: next.account }
+        : next;
       setSnapshot(displaySnapshot);
-      setError(responseWasIncomplete && (displaySnapshot.weekly || displaySnapshot.fiveHour)
-        ? "Codex temporarily omitted a usage window; showing the last valid value."
-        : null);
-      if (displaySnapshot.weekly || displaySnapshot.fiveHour) {
-        localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(displaySnapshot));
+      setError(showingFallback
+        ? "Showing the last update while Codex reconnects…"
+        : next.account.connected && !hasFreshUsage
+          ? "Live usage unavailable; retrying…"
+          : null);
+      if (hasFreshUsage) {
+        localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(next));
         setSamples((current) => {
           const capturedAt = Date.now();
           const newSamples: UsageSample[] = [];
@@ -379,10 +376,21 @@ export default function App() {
           localStorage.setItem(SAMPLES_KEY, JSON.stringify(compacted));
           return compacted;
         });
+      } else if (!showingFallback) {
+        localStorage.removeItem(SNAPSHOT_KEY);
       }
     } catch (cause) {
       const message = String(cause);
-      setError(message.includes("not found") ? "Codex is not installed or could not be found." : message);
+      const previous = snapshot?.account.connected ? snapshot : loadLastGoodSnapshot();
+      if (!canReuseSnapshot(previous)) {
+        localStorage.removeItem(SNAPSHOT_KEY);
+        setSnapshot((current) => current ? { ...current, weekly: null, fiveHour: null } : current);
+      }
+      setError(message.includes("not found")
+        ? "Codex is not installed or could not be found."
+        : canReuseSnapshot(previous)
+          ? "Showing the last update while Codex reconnects…"
+          : "Live usage unavailable; retrying…");
     } finally {
       refreshing.current = false;
       setLoading(false);
@@ -747,7 +755,7 @@ export default function App() {
                 </button>
               </div>
             )}
-            {error && <div className="toast-error"><CircleAlert size={14} /> Data may be stale</div>}
+            {error && <div className="toast-error" title={error}><CircleAlert size={14} /> {error}</div>}
           </div>
         )}
       </section>

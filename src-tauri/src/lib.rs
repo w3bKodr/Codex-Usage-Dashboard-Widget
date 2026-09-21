@@ -214,8 +214,38 @@ impl CodexClient {
     }
 
     async fn request(&self, method: &str, params: Option<Value>) -> Result<Value> {
-        self.ensure_started().await?;
-        self.request_raw(method, params).await
+        let mut last_error = None;
+        for attempt in 0..2 {
+            if let Err(error) = self.ensure_started().await {
+                last_error = Some(error);
+                if attempt == 0 {
+                    continue;
+                }
+                break;
+            }
+            match self.request_raw(method, params.clone()).await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    let connection_was_reset = !self.inner.connected.load(Ordering::SeqCst);
+                    last_error = Some(error);
+                    if attempt == 0 && connection_was_reset {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow!("Codex request failed")))
+    }
+
+    async fn reset_connection(&self) {
+        self.inner.connected.store(false, Ordering::SeqCst);
+        *self.inner.stdin.lock().await = None;
+        self.inner.pending.lock().await.clear();
+        if let Some(mut child) = self.inner.child.lock().await.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
     }
 
     async fn request_raw(&self, method: &str, params: Option<Value>) -> Result<Value> {
@@ -226,13 +256,33 @@ impl CodexClient {
         }
         let (sender, receiver) = oneshot::channel();
         self.inner.pending.lock().await.insert(id, sender);
-        self.write_message(&message).await?;
-        let response = tokio::time::timeout(Duration::from_secs(25), receiver)
-            .await
-            .context("Codex did not respond in time")?
-            .context("Codex stopped before responding")?;
+        if let Err(error) = self.write_message(&message).await {
+            self.inner.pending.lock().await.remove(&id);
+            self.reset_connection().await;
+            return Err(error);
+        }
+        let response = match tokio::time::timeout(Duration::from_secs(15), receiver).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                self.reset_connection().await;
+                return Err(anyhow!("Codex stopped before responding"));
+            }
+            Err(_) => {
+                self.reset_connection().await;
+                return Err(anyhow!("Codex did not respond in time"));
+            }
+        };
         if let Some(error) = response.get("error") {
-            return Err(anyhow!(error.to_string()));
+            let message = error.to_string();
+            let lower = message.to_ascii_lowercase();
+            if method.starts_with("account/")
+                && (lower.contains("unauthor")
+                    || lower.contains("authentication")
+                    || lower.contains("token"))
+            {
+                self.reset_connection().await;
+            }
+            return Err(anyhow!(message));
         }
         response.get("result").cloned().ok_or_else(|| anyhow!("Codex returned an empty response"))
     }
@@ -373,6 +423,12 @@ async fn read_usage_windows(client: &CodexClient) -> (Option<WeeklyUsage>, Optio
             if last_result.0.is_some() || last_result.1.is_some() {
                 return last_result;
             }
+        }
+        // A long-running app-server can retain stale auth/runtime state across
+        // Codex desktop updates. Replace it before the final retry when it is
+        // responsive but repeatedly returns no recognizable usage windows.
+        if attempt == 1 {
+            client.reset_connection().await;
         }
         if attempt < 2 {
             tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))).await;
