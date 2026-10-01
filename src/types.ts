@@ -25,6 +25,26 @@ export type DashboardSnapshot = {
   fetchedAt: number;
 };
 
+export type ResetCredit = {
+  id: string;
+  status: string;
+  title: string;
+  description?: string | null;
+  grantedAt?: string | null;
+  expiresAt: string;
+};
+
+export type ResetCreditsState = {
+  availableCount: number;
+  credits: ResetCredit[];
+  fetchedAt: number;
+};
+
+export type ConsumeResetResult = {
+  outcome: string;
+  resetCredits: ResetCreditsState;
+};
+
 export type LoginStart = {
   loginId: string;
   authUrl: string;

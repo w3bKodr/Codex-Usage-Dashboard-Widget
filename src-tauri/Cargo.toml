@@ -1,6 +1,6 @@
 [package]
 name = "codex-usage-dashboard"
-version = "0.1.13"
+version = "0.1.14"
 description = "A transparent Codex usage dashboard for Windows"
 authors = ["Codex Usage Dashboard"]
 edition = "2021"
@@ -17,6 +17,7 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"

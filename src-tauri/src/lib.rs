@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -72,6 +72,62 @@ struct LoginStart {
     login_id: String,
     auth_url: String,
 }
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetCredit {
+    id: String,
+    status: String,
+    title: String,
+    description: Option<String>,
+    granted_at: Option<String>,
+    expires_at: String,
+}
+
+#[derive(Deserialize)]
+struct ResetCreditsApiResponse {
+    #[serde(default)]
+    credits: Vec<ResetCreditApi>,
+    #[serde(default)]
+    available_count: i64,
+}
+
+#[derive(Deserialize)]
+struct ResetCreditApi {
+    id: String,
+    status: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    granted_at: Option<String>,
+    expires_at: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetCreditsState {
+    available_count: i64,
+    credits: Vec<ResetCredit>,
+    fetched_at: i64,
+}
+
+#[derive(Deserialize)]
+struct ConsumeResetApiResponse {
+    code: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsumeResetResult {
+    outcome: String,
+    reset_credits: ResetCreditsState,
+}
+
+const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const RESET_CREDITS_CONSUME_URL: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 
 impl CodexClient {
     fn new(app: AppHandle) -> Self {
@@ -148,9 +204,18 @@ impl CodexClient {
             "Codex could not be started. Update the Codex desktop app, or set CODEX_WIDGET_CODEX_PATH to codex.exe. Tried: {}",
             failures.join("; ")
         ))?;
-        let stdin = child.stdin.take().context("Codex app-server did not open stdin")?;
-        let stdout = child.stdout.take().context("Codex app-server did not open stdout")?;
-        let stderr = child.stderr.take().context("Codex app-server did not open stderr")?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("Codex app-server did not open stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Codex app-server did not open stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Codex app-server did not open stderr")?;
 
         *self.inner.stdin.lock().await = Some(stdin);
         *self.inner.child.lock().await = Some(child);
@@ -160,23 +225,34 @@ impl CodexClient {
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
                 if let Some(id) = message.get("id").and_then(Value::as_i64) {
                     if let Some(sender) = reader_inner.pending.lock().await.remove(&id) {
                         let _ = sender.send(message);
                     }
                     continue;
                 }
-                let Some(method) = message.get("method").and_then(Value::as_str) else { continue };
+                let Some(method) = message.get("method").and_then(Value::as_str) else {
+                    continue;
+                };
                 match method {
                     "account/rateLimits/updated" => {
-                        let _ = reader_inner.app.emit("codex://rate-limits-updated", message.get("params").cloned());
+                        let _ = reader_inner.app.emit(
+                            "codex://rate-limits-updated",
+                            message.get("params").cloned(),
+                        );
                     }
                     "account/login/completed" => {
-                        let _ = reader_inner.app.emit("codex://login-completed", message.get("params").cloned());
+                        let _ = reader_inner
+                            .app
+                            .emit("codex://login-completed", message.get("params").cloned());
                     }
                     "account/updated" => {
-                        let _ = reader_inner.app.emit("codex://account-updated", message.get("params").cloned());
+                        let _ = reader_inner
+                            .app
+                            .emit("codex://account-updated", message.get("params").cloned());
                     }
                     _ => {}
                 }
@@ -284,7 +360,10 @@ impl CodexClient {
             }
             return Err(anyhow!(message));
         }
-        response.get("result").cloned().ok_or_else(|| anyhow!("Codex returned an empty response"))
+        response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| anyhow!("Codex returned an empty response"))
     }
 
     async fn notify(&self, method: &str, params: Option<Value>) -> Result<()> {
@@ -307,7 +386,10 @@ impl CodexClient {
 }
 
 fn string_at(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
 }
 
 fn number_at(value: &Value, key: &str) -> Option<f64> {
@@ -326,9 +408,19 @@ fn integer_at(value: &Value, key: &str) -> Option<i64> {
     })
 }
 
-fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<WeeklyUsage>, Option<String>, bool) {
+fn find_usage_windows(
+    rate_limits: &Value,
+) -> (
+    Option<WeeklyUsage>,
+    Option<WeeklyUsage>,
+    Option<String>,
+    bool,
+) {
     let mut snapshots: Vec<(&Value, Option<String>)> = Vec::new();
-    if let Some(by_id) = rate_limits.get("rateLimitsByLimitId").and_then(Value::as_object) {
+    if let Some(by_id) = rate_limits
+        .get("rateLimitsByLimitId")
+        .and_then(Value::as_object)
+    {
         for (limit_id, value) in by_id {
             snapshots.push((value, Some(limit_id.clone())));
         }
@@ -352,11 +444,18 @@ fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<Weekl
         let limit_name = string_at(snapshot, "limitName");
         if let Some(credits) = snapshot.get("credits") {
             credits_balance = credits_balance.or_else(|| string_at(credits, "balance"));
-            credits_unlimited |= credits.get("unlimited").and_then(Value::as_bool).unwrap_or(false);
+            credits_unlimited |= credits
+                .get("unlimited")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         }
-        let Some(fields) = snapshot.as_object() else { continue };
+        let Some(fields) = snapshot.as_object() else {
+            continue;
+        };
         for (key, window) in fields {
-            let Some(used_percent) = number_at(window, "usedPercent") else { continue };
+            let Some(used_percent) = number_at(window, "usedPercent") else {
+                continue;
+            };
             let duration = integer_at(window, "windowDurationMins");
             let candidate = WeeklyUsage {
                 used_percent,
@@ -366,7 +465,11 @@ fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<Weekl
                 limit_id: limit_id.clone(),
                 limit_name: limit_name.clone(),
             };
-            let codex_bonus = if limit_id.as_deref() == Some("codex") { 10_000 } else { 0 };
+            let codex_bonus = if limit_id.as_deref() == Some("codex") {
+                10_000
+            } else {
+                0
+            };
             let normalized_key = key.to_ascii_lowercase();
             let weekly_hint = normalized_key.contains("weekly")
                 || normalized_key.contains("secondary")
@@ -380,26 +483,38 @@ fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<Weekl
                 Some(minutes) if minutes > 2 * 24 * 60 => {
                     let distance = (minutes - 10_080).abs().min(90_000);
                     let score = codex_bonus + 100_000 - distance;
-                    if best_weekly.as_ref().is_none_or(|(current, _)| score > *current) {
+                    if best_weekly
+                        .as_ref()
+                        .is_none_or(|(current, _)| score > *current)
+                    {
                         best_weekly = Some((score, candidate));
                     }
                 }
                 Some(minutes) => {
                     let distance = (minutes - 300).abs().min(90_000);
                     let score = codex_bonus + 100_000 - distance;
-                    if best_five_hour.as_ref().is_none_or(|(current, _)| score > *current) {
+                    if best_five_hour
+                        .as_ref()
+                        .is_none_or(|(current, _)| score > *current)
+                    {
                         best_five_hour = Some((score, candidate));
                     }
                 }
                 None if weekly_hint => {
                     let score = codex_bonus + 50_000;
-                    if best_weekly.as_ref().is_none_or(|(current, _)| score > *current) {
+                    if best_weekly
+                        .as_ref()
+                        .is_none_or(|(current, _)| score > *current)
+                    {
                         best_weekly = Some((score, candidate));
                     }
                 }
                 None if short_hint => {
                     let score = codex_bonus + 50_000;
-                    if best_five_hour.as_ref().is_none_or(|(current, _)| score > *current) {
+                    if best_five_hour
+                        .as_ref()
+                        .is_none_or(|(current, _)| score > *current)
+                    {
                         best_five_hour = Some((score, candidate));
                     }
                 }
@@ -415,7 +530,14 @@ fn find_usage_windows(rate_limits: &Value) -> (Option<WeeklyUsage>, Option<Weekl
     )
 }
 
-async fn read_usage_windows(client: &CodexClient) -> (Option<WeeklyUsage>, Option<WeeklyUsage>, Option<String>, bool) {
+async fn read_usage_windows(
+    client: &CodexClient,
+) -> (
+    Option<WeeklyUsage>,
+    Option<WeeklyUsage>,
+    Option<String>,
+    bool,
+) {
     let mut last_result = (None, None, None, false);
     for attempt in 0..3 {
         if let Ok(value) = client.request("account/rateLimits/read", None).await {
@@ -438,22 +560,35 @@ async fn read_usage_windows(client: &CodexClient) -> (Option<WeeklyUsage>, Optio
 }
 
 #[tauri::command]
-async fn get_dashboard(client: State<'_, CodexClient>) -> std::result::Result<DashboardSnapshot, String> {
+async fn get_dashboard(
+    client: State<'_, CodexClient>,
+) -> std::result::Result<DashboardSnapshot, String> {
     let account_result = client
         .request("account/read", Some(json!({ "refreshToken": false })))
         .await
         .map_err(|error| error.to_string())?;
-    let account_value = account_result.get("account").filter(|value| !value.is_null());
+    let account_value = account_result
+        .get("account")
+        .filter(|value| !value.is_null());
     let connected = account_value
         .and_then(|value| value.get("type"))
         .and_then(Value::as_str)
-        .is_some_and(|kind| matches!(kind, "chatgpt" | "chatgptAuthTokens" | "agentIdentity" | "personalAccessToken"));
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                "chatgpt" | "chatgptAuthTokens" | "agentIdentity" | "personalAccessToken"
+            )
+        });
     let email = account_value.and_then(|value| string_at(value, "email"));
     let plan = account_value.and_then(|value| string_at(value, "planType"));
 
     if !connected {
         return Ok(DashboardSnapshot {
-            account: AccountState { connected, email, plan },
+            account: AccountState {
+                connected,
+                email,
+                plan,
+            },
             five_hour: None,
             weekly: None,
             tokens_today: None,
@@ -483,7 +618,10 @@ async fn get_dashboard(client: State<'_, CodexClient>) -> std::result::Result<Da
         .and_then(Value::as_array)
         .and_then(|buckets| {
             buckets.iter().max_by_key(|bucket| {
-                bucket.get("startDate").and_then(Value::as_str).unwrap_or_default()
+                bucket
+                    .get("startDate")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
             })
         });
     let tokens_today = latest_bucket
@@ -492,7 +630,11 @@ async fn get_dashboard(client: State<'_, CodexClient>) -> std::result::Result<Da
     let token_bucket_date = latest_bucket.and_then(|value| string_at(value, "startDate"));
 
     Ok(DashboardSnapshot {
-        account: AccountState { connected, email, plan },
+        account: AccountState {
+            connected,
+            email,
+            plan,
+        },
         five_hour,
         weekly,
         tokens_today,
@@ -501,6 +643,140 @@ async fn get_dashboard(client: State<'_, CodexClient>) -> std::result::Result<Da
         credits_balance,
         credits_unlimited,
         fetched_at: Utc::now().timestamp_millis(),
+    })
+}
+
+async fn codex_auth_token(client: &CodexClient) -> Result<String> {
+    let auth = client
+        .request(
+            "getAuthStatus",
+            Some(json!({
+                "includeToken": true,
+                "refreshToken": true
+            })),
+        )
+        .await
+        .context("Codex could not refresh account authentication")?;
+    string_at(&auth, "authToken")
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| anyhow!("Codex did not provide an authenticated account token"))
+}
+
+async fn fetch_reset_credit_api(client: &CodexClient) -> Result<ResetCreditsApiResponse> {
+    let token = codex_auth_token(client).await?;
+    reqwest::Client::new()
+        .get(RESET_CREDITS_URL)
+        .bearer_auth(token)
+        .header(reqwest::header::USER_AGENT, "codex-usage-dashboard")
+        .send()
+        .await
+        .context("Could not contact Codex reset-credit service")?
+        .error_for_status()
+        .context("Codex reset-credit service rejected the request")?
+        .json::<ResetCreditsApiResponse>()
+        .await
+        .context("Codex returned an unreadable reset-credit response")
+}
+
+async fn load_reset_credits(client: &CodexClient) -> Result<ResetCreditsState> {
+    let api = fetch_reset_credit_api(client).await?;
+    let now = Utc::now();
+    let mut credits = api
+        .credits
+        .into_iter()
+        .filter(|credit| {
+            credit.status == "available"
+                && chrono::DateTime::parse_from_rfc3339(&credit.expires_at)
+                    .map(|expires| expires > now)
+                    .unwrap_or(true)
+        })
+        .map(|credit| ResetCredit {
+            id: credit.id,
+            status: credit.status,
+            title: credit.title.unwrap_or_else(|| "Full reset".to_string()),
+            description: credit.description,
+            granted_at: credit.granted_at,
+            expires_at: credit.expires_at,
+        })
+        .collect::<Vec<_>>();
+    credits.sort_by(|left, right| left.expires_at.cmp(&right.expires_at));
+    Ok(ResetCreditsState {
+        available_count: api.available_count.max(0),
+        credits,
+        fetched_at: Utc::now().timestamp_millis(),
+    })
+}
+
+#[tauri::command]
+async fn get_reset_credits(
+    client: State<'_, CodexClient>,
+) -> std::result::Result<ResetCreditsState, String> {
+    load_reset_credits(&client)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn consume_reset_credit(
+    client: State<'_, CodexClient>,
+    credit_id: String,
+    idempotency_key: String,
+) -> std::result::Result<ConsumeResetResult, String> {
+    if credit_id.trim().is_empty() || idempotency_key.trim().is_empty() {
+        return Err("A reset credit and confirmation key are required.".to_string());
+    }
+
+    // Redemption is deliberately isolated in this command. Dashboard refreshes only call
+    // get_reset_credits and can never consume a credit.
+    let before = load_reset_credits(&client)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !before
+        .credits
+        .iter()
+        .any(|credit| credit.id == credit_id && credit.status == "available")
+    {
+        return Err(
+            "That reset is no longer available. Refresh the list and try again.".to_string(),
+        );
+    }
+
+    let token = codex_auth_token(&client)
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = reqwest::Client::new()
+        .post(RESET_CREDITS_CONSUME_URL)
+        .bearer_auth(token)
+        .header(reqwest::header::USER_AGENT, "codex-usage-dashboard")
+        .json(&json!({
+            "credit_id": credit_id,
+            "redeem_request_id": idempotency_key
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Reset request could not be sent: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Codex rejected the reset request: {error}"))?
+        .json::<ConsumeResetApiResponse>()
+        .await
+        .map_err(|error| format!("Codex returned an unreadable reset result: {error}"))?;
+
+    if !matches!(response.code.as_str(), "reset" | "already_redeemed") {
+        return Err(match response.code.as_str() {
+            "no_credit" => "No reset credit is available for this account.".to_string(),
+            "nothing_to_reset" => {
+                "Codex reports that no allowance currently needs a reset.".to_string()
+            }
+            other => format!("Codex did not apply the reset ({other})."),
+        });
+    }
+
+    let reset_credits = load_reset_credits(&client).await.map_err(|error| {
+        format!("The reset was accepted, but the updated balance could not be loaded: {error}")
+    })?;
+    Ok(ConsumeResetResult {
+        outcome: response.code,
+        reset_credits,
     })
 }
 
@@ -518,14 +794,19 @@ async fn begin_login(client: State<'_, CodexClient>) -> std::result::Result<Logi
         .await
         .map_err(|error| error.to_string())?;
     Ok(LoginStart {
-        login_id: string_at(&result, "loginId").ok_or_else(|| "Codex did not return a login ID".to_string())?,
-        auth_url: string_at(&result, "authUrl").ok_or_else(|| "Codex did not return a browser login URL".to_string())?,
+        login_id: string_at(&result, "loginId")
+            .ok_or_else(|| "Codex did not return a login ID".to_string())?,
+        auth_url: string_at(&result, "authUrl")
+            .ok_or_else(|| "Codex did not return a browser login URL".to_string())?,
     })
 }
 
 #[tauri::command]
 async fn logout(client: State<'_, CodexClient>) -> std::result::Result<(), String> {
-    client.request("account/logout", None).await.map_err(|error| error.to_string())?;
+    client
+        .request("account/logout", None)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -533,7 +814,9 @@ fn build_tray(app: &tauri::App) -> Result<()> {
     let show = MenuItemBuilder::with_id("show", "Show widget").build(app)?;
     let refresh = MenuItemBuilder::with_id("refresh", "Refresh usage").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&show, &refresh, &quit]).build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show, &refresh, &quit])
+        .build()?;
     let mut builder = TrayIconBuilder::new()
         .tooltip("Codex Usage Dashboard")
         .menu(&menu)
@@ -586,25 +869,22 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::App("index.html".into()),
-            )
-            .title("Codex Usage Dashboard")
-            .inner_size(400.0, 550.0)
-            .min_inner_size(400.0, 550.0)
-            .max_inner_size(400.0, 550.0)
-            .resizable(false)
-            .fullscreen(false)
-            .decorations(false)
-            .transparent(true)
-            .shadow(false)
-            .skip_taskbar(true)
-            .always_on_bottom(false)
-            .visible(true)
-            .center()
-            .build()?;
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("Codex Usage Dashboard")
+                    .inner_size(400.0, 550.0)
+                    .min_inner_size(400.0, 550.0)
+                    .max_inner_size(400.0, 550.0)
+                    .resizable(false)
+                    .fullscreen(false)
+                    .decorations(false)
+                    .transparent(true)
+                    .shadow(false)
+                    .skip_taskbar(true)
+                    .always_on_bottom(false)
+                    .visible(true)
+                    .center()
+                    .build()?;
             app.manage(CodexClient::new(app.handle().clone()));
             build_tray(app)?;
             // Always launch visibly. Desktop mode is opt-in after the UI loads.
@@ -613,7 +893,13 @@ pub fn run() {
             window.set_focus()?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_dashboard, begin_login, logout])
+        .invoke_handler(tauri::generate_handler![
+            get_dashboard,
+            get_reset_credits,
+            consume_reset_credit,
+            begin_login,
+            logout
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Codex Usage Dashboard");
 }
@@ -665,7 +951,12 @@ mod tests {
             }
         });
         let (five_hour, weekly, _, _) = find_usage_windows(&limits);
-        assert_eq!(five_hour.expect("five-hour bucket should be selected").window_duration_mins, Some(300));
+        assert_eq!(
+            five_hour
+                .expect("five-hour bucket should be selected")
+                .window_duration_mins,
+            Some(300)
+        );
         assert!(weekly.is_none());
     }
 
@@ -684,7 +975,12 @@ mod tests {
         });
         let (five_hour, weekly, _, _) = find_usage_windows(&limits);
         assert!(five_hour.is_none());
-        assert_eq!(weekly.expect("weekly bucket should be selected").remaining_percent, 88.0);
+        assert_eq!(
+            weekly
+                .expect("weekly bucket should be selected")
+                .remaining_percent,
+            88.0
+        );
     }
 
     #[test]
@@ -706,7 +1002,12 @@ mod tests {
             }
         });
         let (five_hour, weekly, _, _) = find_usage_windows(&limits);
-        assert_eq!(five_hour.expect("short window should be selected").remaining_percent, 85.5);
+        assert_eq!(
+            five_hour
+                .expect("short window should be selected")
+                .remaining_percent,
+            85.5
+        );
         let weekly = weekly.expect("changed multi-day window should be selected");
         assert_eq!(weekly.window_duration_mins, Some(10_020));
         assert_eq!(weekly.remaining_percent, 59.0);
@@ -721,7 +1022,17 @@ mod tests {
             }
         });
         let (five_hour, weekly, _, _) = find_usage_windows(&limits);
-        assert_eq!(five_hour.expect("primary should be selected").remaining_percent, 91.0);
-        assert_eq!(weekly.expect("secondary should be selected").remaining_percent, 73.0);
+        assert_eq!(
+            five_hour
+                .expect("primary should be selected")
+                .remaining_percent,
+            91.0
+        );
+        assert_eq!(
+            weekly
+                .expect("secondary should be selected")
+                .remaining_percent,
+            73.0
+        );
     }
 }

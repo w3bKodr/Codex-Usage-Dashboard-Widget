@@ -18,6 +18,7 @@ import {
   Minus,
   Palette,
   RefreshCw,
+  RotateCcw,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -27,7 +28,10 @@ import {
 } from "lucide-react";
 import type {
   DashboardSnapshot,
+  ConsumeResetResult,
   LoginStart,
+  ResetCredit,
+  ResetCreditsState,
   UsageSample,
   WidgetSettings,
 } from "./types";
@@ -79,6 +83,18 @@ const previewSnapshot: DashboardSnapshot = {
   lifetimeTokens: 8_921_300,
   creditsBalance: null,
   creditsUnlimited: false,
+  fetchedAt: Date.now(),
+};
+
+const previewResetCredits: ResetCreditsState = {
+  availableCount: 3,
+  credits: [3, 4, 22].map((day, index) => ({
+    id: `preview-${index}`,
+    status: "available",
+    title: "Full reset",
+    description: "Refreshes your Codex usage allowance.",
+    expiresAt: new Date(Date.UTC(2026, 9, day, 20 + index, 30)).toISOString(),
+  })),
   fetchedAt: Date.now(),
 };
 
@@ -153,6 +169,18 @@ function formatReset(timestamp?: number | null): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(timestamp * 1000));
+}
+
+function formatResetCreditExpiry(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Expiration unavailable";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function formatCountdown(timestamp?: number | null, now = Date.now()): string {
@@ -328,8 +356,31 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetCredits, setResetCredits] = useState<ResetCreditsState | null>(null);
+  const [resetCreditsOpen, setResetCreditsOpen] = useState(false);
+  const [resetCreditsLoading, setResetCreditsLoading] = useState(false);
+  const [resetCreditsError, setResetCreditsError] = useState<string | null>(null);
+  const [pendingReset, setPendingReset] = useState<ResetCredit | null>(null);
+  const [resetAttemptKey, setResetAttemptKey] = useState<string | null>(null);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const refreshing = useRef(false);
+
+  const refreshResetCredits = useCallback(async () => {
+    setResetCreditsLoading(true);
+    setResetCreditsError(null);
+    try {
+      const next = isTauriRuntime()
+        ? await invoke<ResetCreditsState>("get_reset_credits")
+        : previewResetCredits;
+      setResetCredits(next);
+    } catch (cause) {
+      setResetCreditsError(String(cause));
+    } finally {
+      setResetCreditsLoading(false);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (refreshing.current) return;
@@ -379,6 +430,7 @@ export default function App() {
       } else if (!showingFallback) {
         localStorage.removeItem(SNAPSHOT_KEY);
       }
+      if (next.account.connected) void refreshResetCredits();
     } catch (cause) {
       const message = String(cause);
       const previous = snapshot?.account.connected ? snapshot : loadLastGoodSnapshot();
@@ -395,7 +447,7 @@ export default function App() {
       refreshing.current = false;
       setLoading(false);
     }
-  }, [snapshot]);
+  }, [refreshResetCredits, snapshot]);
 
   useEffect(() => {
     void refresh();
@@ -508,8 +560,51 @@ export default function App() {
     }
     await invoke("logout");
     setSnapshot(null);
+    setResetCredits(null);
     setSettingsOpen(false);
     await refresh();
+  };
+
+  const openResetCredits = () => {
+    setResetCreditsOpen(true);
+    setResetNotice(null);
+    void refreshResetCredits();
+  };
+
+  const askToUseReset = (credit: ResetCredit) => {
+    setPendingReset(credit);
+    setResetAttemptKey(crypto.randomUUID());
+    setResetCreditsError(null);
+  };
+
+  const closeResetConfirmation = () => {
+    if (resetSubmitting) return;
+    setPendingReset(null);
+    setResetAttemptKey(null);
+  };
+
+  const confirmResetUsage = async () => {
+    if (!pendingReset || !resetAttemptKey || resetSubmitting) return;
+    setResetSubmitting(true);
+    setResetCreditsError(null);
+    try {
+      const result = await invoke<ConsumeResetResult>("consume_reset_credit", {
+        creditId: pendingReset.id,
+        idempotencyKey: resetAttemptKey,
+      });
+      setResetCredits(result.resetCredits);
+      setPendingReset(null);
+      setResetAttemptKey(null);
+      setResetNotice(result.outcome === "already_redeemed"
+        ? "This reset had already been applied. Your balance is now up to date."
+        : "Your Codex usage allowance was reset successfully.");
+      await refresh();
+    } catch (cause) {
+      // Keep the idempotency key so an uncertain retry cannot consume a second credit.
+      setResetCreditsError(String(cause));
+    } finally {
+      setResetSubmitting(false);
+    }
   };
 
   const quotaProjection = useMemo(() => calculateQuotaProjection(samples, snapshot), [samples, snapshot]);
@@ -670,10 +765,19 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <div className="reset-banner">
-                    <CalendarClock size={17} />
-                    <div><span>Weekly reset</span><strong>{formatReset(snapshot.weekly.resetAt)}</strong></div>
-                    <ChevronRight size={15} />
+                  <div className="reset-summary-row">
+                    <div className="reset-banner reset-banner-compact">
+                      <CalendarClock size={17} />
+                      <div><span>Weekly reset</span><strong>{formatReset(snapshot.weekly.resetAt)}</strong></div>
+                    </div>
+                    <button className="reset-credit-summary" type="button" onClick={openResetCredits}>
+                      <RotateCcw size={16} />
+                      <div>
+                        <span>Resets</span>
+                        <strong>{resetCreditsLoading && !resetCredits ? "…" : resetCredits?.availableCount ?? "—"}</strong>
+                      </div>
+                      <ChevronRight size={14} />
+                    </button>
                   </div>
                 )}
 
@@ -756,6 +860,71 @@ export default function App() {
               </div>
             )}
             {error && <div className="toast-error" title={error}><CircleAlert size={14} /> {error}</div>}
+          </div>
+        )}
+
+        {resetCreditsOpen && (
+          <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setResetCreditsOpen(false)}>
+            <section className="reset-credit-panel" role="dialog" aria-modal="true" aria-labelledby="reset-credit-title">
+              <div className="reset-panel-heading">
+                <div>
+                  <span className="eyebrow">Usage limit resets</span>
+                  <h2 id="reset-credit-title">{resetCredits?.availableCount ?? 0} available</h2>
+                </div>
+                <button className="icon-button" type="button" aria-label="Close reset credits" onClick={() => setResetCreditsOpen(false)}><X size={17} /></button>
+              </div>
+
+              {resetNotice && <div className="reset-success"><ShieldCheck size={15} /><span>{resetNotice}</span></div>}
+              {resetCreditsError && <div className="inline-error reset-panel-error"><CircleAlert size={14} /><span>{resetCreditsError}</span></div>}
+
+              <div className="reset-credit-list">
+                {resetCreditsLoading && !resetCredits ? (
+                  <div className="reset-loading"><LoaderCircle className="spin" size={18} /> Loading resets…</div>
+                ) : resetCredits?.credits.length ? resetCredits.credits.map((credit) => (
+                  <article className="reset-credit-item" key={credit.id}>
+                    <div className="reset-credit-icon"><RotateCcw size={16} /></div>
+                    <div className="reset-credit-copy">
+                      <strong>{credit.title}</strong>
+                      <span>Expires {formatResetCreditExpiry(credit.expiresAt)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="reset-use-button"
+                      disabled={resetSubmitting}
+                      title="Use this reset"
+                      onClick={() => askToUseReset(credit)}
+                    >
+                      Use
+                    </button>
+                  </article>
+                )) : (
+                  <div className="reset-empty">No usage-limit resets are available right now.</div>
+                )}
+              </div>
+
+              <button className="reset-refresh-button" type="button" onClick={() => void refreshResetCredits()} disabled={resetCreditsLoading}>
+                <RefreshCw className={resetCreditsLoading ? "spin" : ""} size={13} /> Refresh resets
+              </button>
+            </section>
+          </div>
+        )}
+
+        {pendingReset && (
+          <div className="confirm-backdrop">
+            <section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-reset-title">
+              <div className="confirm-icon"><RotateCcw size={20} /></div>
+              <h2 id="confirm-reset-title">Use one full reset?</h2>
+              <p>This will consume one reset credit and refresh your Codex usage allowance. It cannot be undone.</p>
+              <div className="confirm-expiry">Selected reset expires {formatResetCreditExpiry(pendingReset.expiresAt)}</div>
+              {resetCreditsError && <div className="inline-error confirm-error"><CircleAlert size={14} /><span>{resetCreditsError}</span></div>}
+              <div className="confirm-actions">
+                <button type="button" className="confirm-cancel" onClick={closeResetConfirmation} disabled={resetSubmitting}>Cancel</button>
+                <button type="button" className="confirm-use" onClick={() => void confirmResetUsage()} disabled={resetSubmitting}>
+                  {resetSubmitting ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}
+                  {resetSubmitting ? "Using reset…" : "Use one reset"}
+                </button>
+              </div>
+            </section>
           </div>
         )}
       </section>
