@@ -751,18 +751,28 @@ export default function App() {
                 </div>
 
                 {snapshot.fiveHour ? (
-                  <div className={`short-window-card ${fiveHourTone}`}>
-                    <div className="short-window-heading">
-                      <span><Timer size={16} /> 5-hour window</span>
-                      <strong>{Math.round(snapshot.fiveHour.remainingPercent)}% left</strong>
+                  <div className="short-window-summary-row">
+                    <div className={`short-window-card ${fiveHourTone}`}>
+                      <div className="short-window-heading">
+                        <span><Timer size={16} /> 5-hour window</span>
+                        <strong>{Math.round(snapshot.fiveHour.remainingPercent)}% left</strong>
+                      </div>
+                      <div className="allowance-bar" aria-label={`${Math.round(snapshot.fiveHour.remainingPercent)} percent of five-hour allowance remaining`}>
+                        <span style={{ width: `${snapshot.fiveHour.remainingPercent}%` }} />
+                      </div>
+                      <div className="short-window-meta">
+                        <span>{formatCountdown(snapshot.fiveHour.resetAt, now)}</span>
+                        <span>resets {formatReset(snapshot.fiveHour.resetAt)}</span>
+                      </div>
                     </div>
-                    <div className="allowance-bar" aria-label={`${Math.round(snapshot.fiveHour.remainingPercent)} percent of five-hour allowance remaining`}>
-                      <span style={{ width: `${snapshot.fiveHour.remainingPercent}%` }} />
-                    </div>
-                    <div className="short-window-meta">
-                      <span>{formatCountdown(snapshot.fiveHour.resetAt, now)}</span>
-                      <span>resets {formatReset(snapshot.fiveHour.resetAt)}</span>
-                    </div>
+                    <button className="reset-credit-summary short-window-reset-button" type="button" onClick={openResetCredits} aria-label="View usage limit resets">
+                      <RotateCcw size={16} />
+                      <div>
+                        <span>Resets</span>
+                        <strong>{resetCreditsLoading && !resetCredits ? "…" : resetCredits?.availableCount ?? "—"}</strong>
+                      </div>
+                      <ChevronRight size={14} />
+                    </button>
                   </div>
                 ) : (
                   <div className="reset-summary-row">
@@ -832,18 +842,28 @@ export default function App() {
                 <div className="metric-icon blue large"><Timer size={22} /></div>
                 <h2>Weekly usage is syncing</h2>
                 <p>Your five-hour allowance is still available while Codex refreshes the longer-term window.</p>
-                <div className={`short-window-card ${fiveHourTone}`}>
-                  <div className="short-window-heading">
-                    <span><Timer size={16} /> 5-hour window</span>
-                    <strong>{Math.round(snapshot.fiveHour.remainingPercent)}% left</strong>
+                <div className="short-window-summary-row">
+                  <div className={`short-window-card ${fiveHourTone}`}>
+                    <div className="short-window-heading">
+                      <span><Timer size={16} /> 5-hour window</span>
+                      <strong>{Math.round(snapshot.fiveHour.remainingPercent)}% left</strong>
+                    </div>
+                    <div className="allowance-bar" aria-label={`${Math.round(snapshot.fiveHour.remainingPercent)} percent of five-hour allowance remaining`}>
+                      <span style={{ width: `${snapshot.fiveHour.remainingPercent}%` }} />
+                    </div>
+                    <div className="short-window-meta">
+                      <span>{formatCountdown(snapshot.fiveHour.resetAt, now)}</span>
+                      <span>resets {formatReset(snapshot.fiveHour.resetAt)}</span>
+                    </div>
                   </div>
-                  <div className="allowance-bar" aria-label={`${Math.round(snapshot.fiveHour.remainingPercent)} percent of five-hour allowance remaining`}>
-                    <span style={{ width: `${snapshot.fiveHour.remainingPercent}%` }} />
-                  </div>
-                  <div className="short-window-meta">
-                    <span>{formatCountdown(snapshot.fiveHour.resetAt, now)}</span>
-                    <span>resets {formatReset(snapshot.fiveHour.resetAt)}</span>
-                  </div>
+                  <button className="reset-credit-summary short-window-reset-button" type="button" onClick={openResetCredits} aria-label="View usage limit resets">
+                    <RotateCcw size={16} />
+                    <div>
+                      <span>Resets</span>
+                      <strong>{resetCreditsLoading && !resetCredits ? "…" : resetCredits?.availableCount ?? "—"}</strong>
+                    </div>
+                    <ChevronRight size={14} />
+                  </button>
                 </div>
                 <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
                   <RefreshCw className={loading ? "spin" : ""} size={16} /> {loading ? "Syncing" : "Try again"}
